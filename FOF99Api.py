@@ -1,5 +1,6 @@
 import time
 import requests
+from typing import Literal
 from hashlib import md5
 from .fof99 import (
     PersonalFundPrice,
@@ -19,12 +20,16 @@ class FOF99Api:
         self.appkey = appkey
         self.token = token
 
-    def update_nav_data_list_to_FOF99(self, update_nav_data_list: list[dict]):
+    def _update_nav_data_list_to_FOF99(
+        self,
+        update_nav_data_list: list[dict],
+        type: Literal["inner", "company"] = "company",
+    ):
         # 上传净值数据到火富牛FOF99
         sign = md5(
             f"app_id={self.appid}&tm={int(time.time())}{self.appkey}".encode()
         ).hexdigest()
-        url = f"https://mallapi.huofuniu.com/company_price/batch/add?app_id={self.appid}&sign={sign}&tm={int(time.time())}"
+        url = f"https://mallapi.huofuniu.com/{type}_price/batch/add?app_id={self.appid}&sign={sign}&tm={int(time.time())}"
         res = requests.post(
             url,
             json={
@@ -56,7 +61,11 @@ class FOF99Api:
             )
         return update_nav_data_list
 
-    def update_nav_to_FOF99(self, nav_data_for_update: pd.DataFrame) -> list[dict]:
+    def update_nav_to_FOF99(
+        self,
+        nav_data_for_update: pd.DataFrame,
+        type: Literal["inner", "company"] = "company",
+    ) -> list[dict]:
         """
         转换数据格式并上传到FOF99
         Parameters
@@ -82,7 +91,7 @@ class FOF99Api:
         for i in range(0, nav_data_for_update.shape[0], 1000):
             sub_nav_data_df = nav_data_for_update.iloc[i : i + 1000, :]
             update_nav_data_list = self.generate_nav_data_list(sub_nav_data_df)
-            self.update_nav_data_list_to_FOF99(update_nav_data_list)
+            self._update_nav_data_list_to_FOF99(update_nav_data_list, type)
 
     def get_fund_info(self, reg_code: str = "SVZ009"):
         req = FundInfo(self.appid, self.appkey)  # 请求对
