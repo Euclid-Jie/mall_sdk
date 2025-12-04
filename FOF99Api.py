@@ -14,12 +14,10 @@ import pandas as pd
 
 
 class FOF99Api:
-    appid: str = ""
-    appkey: str = ""
-    token: str = ""
-
-    def __init__(self):
-        pass
+    def __init__(self, appid: str = "", appkey: str = "", token: str = ""):
+        self.appid = appid
+        self.appkey = appkey
+        self.token = token
 
     def update_nav_data_list_to_FOF99(self, update_nav_data_list: list[dict]):
         # 上传净值数据到火富牛FOF99
