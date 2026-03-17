@@ -10,6 +10,7 @@ from .fof99 import (
     GmFundPrice,
     FundMultiCompanyPrice,
     FundMultiPrice,
+    CompanyInfo,
 )
 import pandas as pd
 
@@ -191,6 +192,32 @@ class FOF99Api:
             raise ValueError("请检查token是否过期")
         return company_info
 
-    def get_fund_info_from_code(self, reg_code) -> str:
-        # TODO: 通过基金代码获取基金信息
-        pass
+    def get_fund_info_from_code(self, registerNo) -> pd.DataFrame:
+        """
+        通过管理人登记编号获取基金信息
+
+        Returns:
+            pd.DataFrame: 包含以下字段的基金信息数据框
+            - legal_person_name: 上海高毅投资管理有限公司
+            - credit_no: 91310120069360143D
+            - business_term: 2013-05-29至2033-05-28
+            - business_scope: 资产管理，投资管理。\r\n【依法须经批准的项目，经相关部门批准后方可开展经营活动】
+            - register_address: 上海市奉贤区青村镇奉村路458号1幢221室
+            - register_code: P1002305
+            - name_cn: 上海高毅资产管理合伙企业（有限合伙）
+            - name_short: 上海高毅资管
+            - strategy: 股票多头
+            - scale: 100亿元以上
+            - found_date: 2013-05-29
+            - fund_num: 370
+            - member_type: 普通会员
+            - register_capital: 35833
+            - paid_capital: 35833
+            - main_type: 私募证券投资基金管理人
+            - office_address: 广东省深圳市福田区中心四路一号深圳嘉里建设广场3座25层
+        """
+        # 
+        req = CompanyInfo(self.appid, self.appkey)  # 请求对
+        req.set_params(reg_code=registerNo)
+        res = req.do_request(use_df=True)
+        return res
