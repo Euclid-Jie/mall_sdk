@@ -192,6 +192,12 @@ class FOF99Api:
             raise ValueError("请检查token是否过期")
         return company_info
 
+    def search_fund(self, keyword: str) -> list:
+        url = f"https://api.huofuniu.com/newgoapi/fund/global/search?keyValue={keyword}"
+        headers = {"access-token": self.token}
+        res = requests.get(url=url, headers=headers)
+        return res.json().get("data", [])
+
     def get_fund_info_from_code(self, registerNo) -> pd.DataFrame:
         """
         通过管理人登记编号获取基金信息
