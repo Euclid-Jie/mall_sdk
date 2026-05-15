@@ -1,7 +1,7 @@
 # -*- coding: utf-8 -*-
 
-__version__ = '1.0.0'
-__author__ = 'fof99.com'
+__version__ = "1.0.0"
+__author__ = "fof99.com"
 
 from .requests.factorrequest import (
     FactorFutures,

@@ -222,7 +222,7 @@ class FOF99Api:
             - main_type: 私募证券投资基金管理人
             - office_address: 广东省深圳市福田区中心四路一号深圳嘉里建设广场3座25层
         """
-        # 
+        #
         req = CompanyInfo(self.appid, self.appkey)  # 请求对
         req.set_params(reg_code=registerNo)
         res = req.do_request(use_df=True)
