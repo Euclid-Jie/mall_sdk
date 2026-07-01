@@ -1,93 +1,150 @@
-# 火富牛SDK
+# mall_sdk
 
-## SDK请求类
+`mall_sdk` 是一个围绕火富牛 / FOF99 数据接口的 Python 项目。项目包含两类能力：
 
-```
-    FactorFutures：提供期货风格因子每日收益率数据
-    FactorStyleCne6：提供CNE6股票风格因子每日收益率数据
-    FactorStyleCne5：提供CNE5股票风格因子每日收益率数据
-    
-    IndexPrice：提供基准指数的行情数据查询
-    IndexBatchPrice：多指数行情查询
-    IndexStockAmt：提供股票指数的成交额数据
-    IndexStockTurn：提供股票指数的换手率数据
-    IndexStockPE：提供股票指数的PE（TTM）中位数数据
-    
-    FundAdvancedList：根据平台/团队策略，获取基金列表数据
-    FundInfo：提供私募基金基本信息数据
-    FundPrice：提供私募基金平台净值的数据
-    FundCompanyPrice：提供私募基金团队净值的数据
-    FundMultiPrice：每次可查询多个基金的平台净值，最多不超过40只
-    PersonalFundPrice：根据自建基金id，查询净值
-    MonitorLogList：查询分享给全团队的异常预警结果
-    FofSubFundVirtualPrice：查询FOF基金下底层基金的虚拟净值
-    DirectFundVirtualPrice：查询直投产品的虚拟净值
-    FundScore：提供私募基金的模型评分信息
-    FofSubFund：基于FOF基金估值表，提供底层基金的持仓份额、金额、占比信息的查询
-    FofSubFundDeals：查询FOF基金下，底层基金的交易记录
-    CompanyPriceBatchAdd：已备案的私募基金上传团队净值。团队用户使用
-    PrivatePriceBatchAdd：已备案的私募基金上传私有净值。个人用户使用
-    InnerPriceBatchAdd：内部基金净值上传
-    FofSubFundTrackList：查询团队各个基金列表的私募基金数据
-    
-    IndexPrice：提供基准指数的行情数据查询
-    IndexBatchPrice：查询多个指数的行情数据，最多不超过40只
-    IndexStockAmt：提供股票指数的成交额数据
-    IndexStockTurn：提供股票指数的换手率数据
-    IndexStockPE：提供股票指数的PE（TTM）中位数数据 
-    PrivateIndexPrice：根据自建指数id，查询指数行情
+- `fof99/`：供应商提供的官方 SDK 请求类，用于调用 `mallapi.huofuniu.com`，需要 `appid/appkey` 签名。
+- 项目根目录自有代码：封装常用业务调用和网页接口抓取能力，避免直接修改供应商 SDK 目录。
 
-    GmFundInfo：提供公募基金基本信息数据
-    GmFundPrice：提供公募基金净值的数据
-    GmFundBatchPrice：公募基金多基金净值
-    
-    FoCombiPrice：提供团队/我的实盘组合净值的数据
-    CombiPrice：提供团队/我的模拟组合净值的数据
-    
-    CompanyInfo：提供投资顾问的信息
-    CompanyScale：提供私募管理人的协会管理规模、披露规模、运作产品数的信息
-    CompanyShareholder：提供私募管理人的股东信息
-    CompanyFundList：提供私募管理人的旗下基金列表
-    
-    FundBuyInfo：提供【投资-直投产品】列表中公/私募基金的交易记录数据
-    FofInvestCustomerPrice：查询直投产品拟合的组合的净值
-    FofInvestFundScale：查询直投产品拟合的组合的净值
+当前重点能力包括基金信息查询、平台/团队净值查询、多基金批量净值查询、净值上传，以及从 `mp.fof99.com` 基金详情页背后的网页接口抓取净值数据。
+
+## 目录结构
+
+```text
+.
+├── FOF99Api.py                    # 项目自有的官方 SDK 业务封装
+├── scraper.py                     # 项目自有的 FOF99 网页接口抓取工具
+├── fof99/                         # 供应商 SDK 代码，原则上不要直接修改
+├── examples/
+│   ├── test.py                    # 官方 SDK 基础示例
+│   ├── scrape_fund_nav.py         # 网页净值抓取示例
+│   └── examples_fund_nav.csv      # 净值抓取样例输出
+├── docs/
+│   └── fof99-web-scraping.md      # 网页净值抓取接口说明
+├── requirements.txt               # Python 依赖
+└── .env                           # 本地密钥配置，不提交 git
 ```
 
+## 安装
 
-## 安装依赖类库
+建议使用虚拟环境：
 
-```shell
-    # 进入包含【requirements.txt】文件的目录执行下面命令
-    pip install -r requirements.txt --trusted-host mirrors.aliyun.com \
-        --index-url "https://mirrors.aliyun.com/pypi/simple/" 
+```powershell
+python -m venv .venv
+.\.venv\Scripts\Activate.ps1
+pip install -r requirements.txt
 ```
 
+依赖很少，目前只有：
 
-## SDK使用示例
+```text
+requests
+pandas
+```
+
+## 配置
+
+网页抓取能力默认从项目根目录 `.env` 读取 token：
+
+```dotenv
+FOF99_WEB_TOKEN = your-web-token
+```
+
+`.env` 已加入 `.gitignore`，不要提交到远程仓库。也可以通过系统环境变量覆盖：
+
+```powershell
+$env:FOF99_WEB_TOKEN = "your-web-token"
+```
+
+官方 SDK 仍然使用 `appid/appkey`，调用时传给 `FOF99Api`：
 
 ```python
+from FOF99Api import FOF99Api
 
-    # 将fof99目录添加到Python搜索路径【这步很重要，否则执行脚本找不到请求类】
-    import sys
-    sys.path.append(r'E:\path\to\mall_sdk')
-    
-    # 1、引入请求类
-    from fof99 import FundPrice
-    
-    # 2、创建请求对象
-    appid = '应用ID，从火富牛API商城获取'
-    appkey = '应用密钥，从火富牛API商城获取'
-    req = FundPrice(appid, appkey) # 请求对象
-    
-    # 3、设置请求参数，参考API文档
-    req.set_params(reg_code='SN5489', start_date='2024-01-01', order_by='price_date', order=1)
-    
-    # 4、发起请求， use_df=True表示结果返回pandas.DataFrame对象；use_df=False表示结果返回Python列表
-    res = req.do_request(use_df=True)
-    
-    # 5、结果处理
-    print(res) # 打印结果
-    print(req.get_debug_info()) # 打印API响应参数，用于接口调试
+api = FOF99Api(appid="your-appid", appkey="your-appkey", token="your-web-token")
 ```
 
+## 官方 SDK 封装
+
+`FOF99Api.py` 是项目自有封装，内部复用 `fof99/` SDK 请求类。常用方法：
+
+- `get_fund_info(reg_code)`：查询私募基金基本信息。
+- `get_fund_price(reg_code, start_date)`：查询平台净值。
+- `get_company_price(reg_code, start_date)`：查询团队净值。
+- `get_public_fund_price(reg_code, start_date)`：查询公募基金净值。
+- `get_multi_price(reg_codes, date)`：批量查询平台净值，每批最多 40 只。
+- `get_multi_company_price(reg_codes, date)`：批量查询团队净值，每批最多 40 只。
+- `search_fund(keyword)`：通过网页接口搜索基金。
+- `get_company_info_from_code(comp_code)`：通过网页接口查询管理人信息。
+- `get_fund_info_from_code(registerNo)`：通过管理人登记编号查询管理人/基金相关信息。
+- `update_nav_to_FOF99(nav_data_for_update, type)`：上传团队或内部净值。
+
+示例：
+
+```python
+from FOF99Api import FOF99Api
+
+api = FOF99Api(appid="your-appid", appkey="your-appkey")
+df = api.get_fund_price(reg_code="SVZ009", start_date="2024-01-01")
+print(df.head())
+```
+
+## 网页净值抓取
+
+官方 SDK 有调用次数限制时，可以使用 `scraper.py` 调用基金详情页背后的网页接口。该方式不消耗官方 SDK 调用次数，但需要有效的网页登录 token。
+
+已验证页面：
+
+```text
+https://mp.fof99.com/fund/view/1efcf35e914e1b54
+```
+
+示例：
+
+```python
+from scraper import FOF99WebScraper
+
+scraper = FOF99WebScraper()  # 自动读取 .env 中的 FOF99_WEB_TOKEN
+df = scraper.get_fund_nav("1efcf35e914e1b54")
+print(df.head())
+```
+
+命令行：
+
+```powershell
+.\.venv\Scripts\python.exe examples\scrape_fund_nav.py https://mp.fof99.com/fund/view/1efcf35e914e1b54
+```
+
+返回字段：
+
+```text
+date            日期
+unit_nav        单位净值
+cumulative_nav  累计净值
+adjusted_nav    复权净值
+change_pct      涨跌幅，单位为百分点
+id              网页接口净值记录 ID
+fid             FOF99 网页基金 ID
+source          数据来源类型
+insert_date     接口记录插入时间
+```
+
+更详细的接口说明见 [docs/fof99-web-scraping.md](docs/fof99-web-scraping.md)。
+
+## 开发约定
+
+- `fof99/` 是供应商 SDK 目录，除非明确升级 SDK，否则不要在这里做项目自定义改动。
+- 项目自有能力放在根目录模块或 `docs/`、`examples/` 下。
+- 密钥和 token 只放在 `.env` 或环境变量中，不写入代码、文档示例或提交记录。
+- 修改代码后至少运行语法检查：
+
+```powershell
+$env:PYTHONDONTWRITEBYTECODE='1'
+.\.venv\Scripts\python.exe -m py_compile FOF99Api.py scraper.py examples\scrape_fund_nav.py
+Remove-Item Env:\PYTHONDONTWRITEBYTECODE
+```
+
+如需验证网页抓取：
+
+```powershell
+.\.venv\Scripts\python.exe -c "from scraper import FOF99WebScraper; df=FOF99WebScraper().get_fund_nav('1efcf35e914e1b54'); print(len(df)); print(df.head())"
+```
