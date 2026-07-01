@@ -67,6 +67,12 @@ Remove-Item Env:\PYTHONDONTWRITEBYTECODE
 .\.venv\Scripts\python.exe -c "from scraper import FOF99WebScraper; df=FOF99WebScraper().get_fund_nav('1efcf35e914e1b54'); print(len(df)); print(df.head())"
 ```
 
+网页基本信息验证：
+
+```powershell
+.\.venv\Scripts\python.exe -c "from FOF99Api import FOF99Api; print(FOF99Api().get_fund_basic_info_from_id('https://mp.fof99.com/fund/view/1efcf35e914e1b54'))"
+```
+
 ## 网页抓取约定
 
 `scraper.py` 的 token 读取顺序：

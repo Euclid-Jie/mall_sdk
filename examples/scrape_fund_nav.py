@@ -8,6 +8,7 @@ from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
+from FOF99Api import FOF99Api
 from scraper import FOF99WebScraper
 
 
@@ -30,10 +31,21 @@ def main() -> None:
     parser.add_argument("--page-size", type=int, default=500)
     args = parser.parse_args()
 
+    api = FOF99Api(token=args.token or "")
+    basic_info = api.get_fund_basic_info_from_id(args.fund)
+    print("基金基本信息:")
+    for key, value in basic_info.items():
+        print(f"{key}: {value}")
+
     scraper = FOF99WebScraper(token=args.token)
     df = scraper.get_fund_nav(parse_fid(args.fund), page_size=args.page_size)
-    df.to_csv("examples/examples_fund_nav.csv", index=False)
+    output_path = Path(__file__).with_name("examples_fund_nav.csv")
+    df.to_csv(output_path, index=False)
+    print(f"\n净值行数: {len(df)}")
+    print(f"净值样例已写入: {output_path}")
+    print(df.head(5).to_string(index=False))
 
 
 if __name__ == "__main__":
+    # .\.venv\Scripts\python.exe examples\scrape_fund_nav.py 1efcf35e914e1b54
     main()

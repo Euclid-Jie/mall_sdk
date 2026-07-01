@@ -2,7 +2,7 @@ import time
 import requests
 from typing import Literal
 from hashlib import md5
-from .fof99 import (
+from fof99 import (
     PersonalFundPrice,
     FundInfo,
     FundPrice,
@@ -14,12 +14,71 @@ from .fof99 import (
 )
 import pandas as pd
 
+from scraper import get_fof99_web_token
+
 
 class FOF99Api:
     def __init__(self, appid: str = "", appkey: str = "", token: str = ""):
         self.appid = appid
         self.appkey = appkey
         self.token = token
+
+    def _get_web_token(self) -> str:
+        token = self.token or get_fof99_web_token()
+        if not token:
+            raise ValueError("请在 FOF99Api(token=...) 或 .env 中配置 FOF99_WEB_TOKEN")
+        return token
+
+    @staticmethod
+    def _parse_fund_view_id(fid_or_url: str) -> str:
+        fid_or_url = str(fid_or_url).strip()
+        if "/fund/view/" in fid_or_url:
+            return fid_or_url.split("/fund/view/", 1)[1].split("?", 1)[0].split("#", 1)[0]
+        return fid_or_url
+
+    def get_fund_basic_info_from_id(self, fid_or_url: str) -> dict:
+        """
+        通过 FOF99 网页基金 ID 获取基金基本信息。
+
+        参数可以传基金 ID，也可以传完整详情页 URL，例如：
+        https://mp.fof99.com/fund/view/1efcf35e914e1b54
+
+        Returns:
+            dict: 包含产品名称、备案编号、公司管理规模等字段。
+        """
+        fid = self._parse_fund_view_id(fid_or_url)
+        url = "https://api.huofuniu.com/newgoapi/funds/analyze"
+        res = requests.get(
+            url,
+            params={
+                "token": self._get_web_token(),
+                "id": fid,
+                "url": "",
+            },
+            headers={
+                "Accept": "application/json, text/plain, */*",
+                "Origin": "https://mp.fof99.com",
+                "Referer": f"https://mp.fof99.com/fund/view/{fid}",
+            },
+            timeout=30,
+        )
+        res.raise_for_status()
+        payload = res.json()
+        if payload.get("error_code") != 0:
+            raise ValueError(
+                f"获取基金基本信息失败: error_code={payload.get('error_code')}, "
+                f"msg={payload.get('msg')}"
+            )
+        data = payload.get("data") or {}
+        return {
+            "产品名称": data.get("fund_short_name") or data.get("fund_name"),
+            "产品全称": data.get("fund_name"),
+            "备案编号": data.get("register_number"),
+            "公司管理规模": data.get("scale"),
+            "管理人": data.get("advisor"),
+            "fid": data.get("id") or fid,
+            "company_id": data.get("company_id"),
+        }
 
     def _update_nav_data_list_to_FOF99(
         self,

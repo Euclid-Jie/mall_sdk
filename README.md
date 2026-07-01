@@ -76,6 +76,7 @@ api = FOF99Api(appid="your-appid", appkey="your-appkey", token="your-web-token")
 - `search_fund(keyword)`：通过网页接口搜索基金。
 - `get_company_info_from_code(comp_code)`：通过网页接口查询管理人信息。
 - `get_fund_info_from_code(registerNo)`：通过管理人登记编号查询管理人/基金相关信息。
+- `get_fund_basic_info_from_id(fid_or_url)`：通过 FOF99 网页基金 ID 或详情页 URL 查询产品名称、备案编号、公司管理规模等基本信息。
 - `update_nav_to_FOF99(nav_data_for_update, type)`：上传团队或内部净值。
 
 示例：
@@ -108,11 +109,23 @@ df = scraper.get_fund_nav("1efcf35e914e1b54")
 print(df.head())
 ```
 
+如果需要读取详情页基本信息，可以直接使用 `FOF99Api`：
+
+```python
+from FOF99Api import FOF99Api
+
+api = FOF99Api()
+info = api.get_fund_basic_info_from_id("https://mp.fof99.com/fund/view/1efcf35e914e1b54")
+print(info)
+```
+
 命令行：
 
 ```powershell
 .\.venv\Scripts\python.exe examples\scrape_fund_nav.py https://mp.fof99.com/fund/view/1efcf35e914e1b54
 ```
+
+该示例脚本会先打印基金基本信息，再抓取净值列表，写入 `examples/examples_fund_nav.csv`，并在控制台显示前 5 行净值样例。
 
 返回字段：
 
@@ -147,4 +160,10 @@ Remove-Item Env:\PYTHONDONTWRITEBYTECODE
 
 ```powershell
 .\.venv\Scripts\python.exe -c "from scraper import FOF99WebScraper; df=FOF99WebScraper().get_fund_nav('1efcf35e914e1b54'); print(len(df)); print(df.head())"
+```
+
+如需验证详情页基本信息：
+
+```powershell
+.\.venv\Scripts\python.exe -c "from FOF99Api import FOF99Api; print(FOF99Api().get_fund_basic_info_from_id('https://mp.fof99.com/fund/view/1efcf35e914e1b54'))"
 ```

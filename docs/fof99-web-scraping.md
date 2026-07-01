@@ -84,18 +84,61 @@ print(df.head())
 df = scraper.get_fund_nav("1efcf35e914e1b54", page_size=500)
 ```
 
+## 基本信息用法
+
+如果需要读取产品名称、备案编号、公司管理规模等详情页头部信息，使用 `FOF99Api.py` 中的封装：
+
+```python
+from FOF99Api import FOF99Api
+
+api = FOF99Api()
+info = api.get_fund_basic_info_from_id("https://mp.fof99.com/fund/view/1efcf35e914e1b54")
+print(info)
+```
+
+返回示例：
+
+```python
+{
+    "产品名称": "安子心夏多策略一号A类",
+    "产品全称": "安子心夏多策略一号私募证券投资基金A类份额",
+    "备案编号": "TY813A",
+    "公司管理规模": "20-50亿元",
+    "管理人": "深圳安子",
+    "fid": "1efcf35e914e1b54",
+    "company_id": 28936,
+}
+```
+
+该方法调用的页面接口为：
+
+```text
+GET https://api.huofuniu.com/newgoapi/funds/analyze
+```
+
 ## 命令行用法
 
 ```powershell
 .\.venv\Scripts\python.exe examples\scrape_fund_nav.py https://mp.fof99.com/fund/view/1efcf35e914e1b54
 ```
 
-输出前 20 行净值，并打印总行数。
+输出内容包括：
+
+- 基金基本信息：产品名称、产品全称、备案编号、公司管理规模、管理人等。
+- 净值总行数。
+- 写入的 CSV 路径：`examples/examples_fund_nav.csv`。
+- 前 5 行净值样例。
 
 ## 验证命令
 
 ```powershell
 .\.venv\Scripts\python.exe -c "from scraper import FOF99WebScraper; df=FOF99WebScraper().get_fund_nav('1efcf35e914e1b54'); print(len(df)); print(df.head())"
+```
+
+验证基本信息：
+
+```powershell
+.\.venv\Scripts\python.exe -c "from FOF99Api import FOF99Api; print(FOF99Api().get_fund_basic_info_from_id('https://mp.fof99.com/fund/view/1efcf35e914e1b54'))"
 ```
 
 当前已验证该基金返回 198 行，最新一行：
