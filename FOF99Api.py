@@ -2,19 +2,32 @@ import time
 import requests
 from typing import Literal
 from hashlib import md5
-from fof99 import (
-    PersonalFundPrice,
-    FundInfo,
-    FundPrice,
-    FundCompanyPrice,
-    GmFundPrice,
-    FundMultiCompanyPrice,
-    FundMultiPrice,
-    CompanyInfo,
-)
 import pandas as pd
 
-from scraper import get_fof99_web_token
+try:
+    from .fof99 import (
+        PersonalFundPrice,
+        FundInfo,
+        FundPrice,
+        FundCompanyPrice,
+        GmFundPrice,
+        FundMultiCompanyPrice,
+        FundMultiPrice,
+        CompanyInfo,
+    )
+    from .scraper import get_fof99_web_token
+except ImportError:
+    from fof99 import (
+        PersonalFundPrice,
+        FundInfo,
+        FundPrice,
+        FundCompanyPrice,
+        GmFundPrice,
+        FundMultiCompanyPrice,
+        FundMultiPrice,
+        CompanyInfo,
+    )
+    from scraper import get_fof99_web_token
 
 
 class FOF99Api:
