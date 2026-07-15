@@ -97,6 +97,8 @@ cn  -> adjusted_nav
 pc  -> change_pct，代码中转换为百分点
 ```
 
+净值来源约定：`source=2` 是团队/公司净值，`source=1` 是平台净值。默认抓取应先尝试 `source=2`，为空时回退到 `source=1`。
+
 ## Git 注意事项
 
 - 开始前先看 `git status --short --branch`。

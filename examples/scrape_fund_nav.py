@@ -29,6 +29,12 @@ def main() -> None:
         help="FOF99 web token. Defaults to FOF99_WEB_TOKEN from env or .env.",
     )
     parser.add_argument("--page-size", type=int, default=500)
+    parser.add_argument(
+        "--source",
+        type=int,
+        default=None,
+        help="NAV source. Defaults to auto: try team/company NAV, then platform NAV.",
+    )
     args = parser.parse_args()
 
     api = FOF99Api(token=args.token or "")
@@ -38,9 +44,11 @@ def main() -> None:
         print(f"{key}: {value}")
 
     scraper = FOF99WebScraper(token=args.token)
-    df = scraper.get_fund_nav(parse_fid(args.fund), page_size=args.page_size)
+    df = scraper.get_fund_nav(
+        parse_fid(args.fund), source=args.source, page_size=args.page_size
+    )
     output_path = Path(__file__).with_name("examples_fund_nav.csv")
-    df.to_csv(output_path, index=False)
+    df.to_csv(output_path, index=False, lineterminator="\n")
     print(f"\n净值行数: {len(df)}")
     print(f"净值样例已写入: {output_path}")
     print(df.head(5).to_string(index=False))

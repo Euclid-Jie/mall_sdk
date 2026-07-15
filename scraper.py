@@ -11,7 +11,7 @@ from dataclasses import dataclass
 from math import ceil
 import os
 from pathlib import Path
-from typing import Any, Dict, Iterable, List, Optional
+from typing import Any, Dict, Iterable, List, Optional, Sequence
 
 import pandas as pd
 import requests
@@ -96,22 +96,57 @@ class FOF99WebScraper:
     def get_fund_nav(
         self,
         fid: str,
-        source: int = 2,
+        source: Optional[int] = None,
         order: int = 1,
         page_size: int = 500,
         use_df: bool = True,
     ) -> pd.DataFrame | List[Dict[str, Any]]:
         """Fetch the NAV table shown on ``/fund/view/{fid}``.
 
-        ``source=2`` and ``order=1`` match the team/company NAV table observed
-        on the fund detail page. The API returns ``pc`` as a decimal return; the
-        normalized ``change_pct`` value is already multiplied by 100.
+        When ``source`` is omitted, the scraper tries team/company NAV first
+        and falls back to platform NAV. The API returns ``pc`` as a decimal
+        return; the normalized ``change_pct`` value is already multiplied by
+        100.
         """
         if not fid:
             raise ValueError("fid is required")
         if page_size <= 0:
             raise ValueError("page_size must be positive")
 
+        sources = [source] if source is not None else [2, 1]
+        rows = self._fetch_first_non_empty_nav(
+            fid=fid,
+            sources=sources,
+            order=order,
+            page_size=page_size,
+        )
+
+        if use_df:
+            return pd.DataFrame(rows)
+        return rows
+
+    def _fetch_first_non_empty_nav(
+        self,
+        fid: str,
+        sources: Sequence[int],
+        order: int,
+        page_size: int,
+    ) -> List[Dict[str, Any]]:
+        for source in sources:
+            rows = self._fetch_nav_by_source(
+                fid=fid, source=source, order=order, page_size=page_size
+            )
+            if rows:
+                return rows
+        return []
+
+    def _fetch_nav_by_source(
+        self,
+        fid: str,
+        source: int,
+        order: int,
+        page_size: int,
+    ) -> List[Dict[str, Any]]:
         rows: List[Dict[str, Any]] = []
         page = 1
         total: Optional[int] = None
@@ -140,9 +175,6 @@ class FOF99WebScraper:
             if total is not None and page >= ceil(int(total) / page_size):
                 break
             page += 1
-
-        if use_df:
-            return pd.DataFrame(rows)
         return rows
 
     @staticmethod

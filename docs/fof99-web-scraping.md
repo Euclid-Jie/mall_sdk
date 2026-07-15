@@ -27,7 +27,7 @@ GET https://api.huofuniu.com/newgoapi/fund/priceList
 ```text
 token=<网页登录 token>
 fid=1efcf35e914e1b54
-source=2
+source=1 或 2
 order=1
 page=1
 pagesize=500
@@ -36,7 +36,8 @@ pagesize=500
 说明：
 
 - `fid` 来自基金详情页 URL：`/fund/view/{fid}`。
-- `source=2` 对应当前页面展示的团队/公司净值来源。
+- `source=1` 可抓平台净值；`source=2` 可抓团队/公司净值。
+- `scraper.py` 默认自动选择：先尝试 `source=2`，若无数据再尝试 `source=1`。
 - `order=1` 为按日期倒序，和页面显示一致。
 - `page/pagesize` 用于分页；`scraper.py` 会自动翻页直到取完 `total`。
 
@@ -78,10 +79,10 @@ df = scraper.get_fund_nav("1efcf35e914e1b54")
 print(df.head())
 ```
 
-也可以直接传 URL 中的 `fid`：
+也可以直接传 URL 中的 `fid`，并指定来源：
 
 ```python
-df = scraper.get_fund_nav("1efcf35e914e1b54", page_size=500)
+df = scraper.get_fund_nav("1efcf35e914e1b54", source=1, page_size=500)
 ```
 
 ## 基本信息用法
@@ -128,6 +129,12 @@ GET https://api.huofuniu.com/newgoapi/funds/analyze
 - 净值总行数。
 - 写入的 CSV 路径：`examples/examples_fund_nav.csv`。
 - 前 5 行净值样例。
+
+默认自动选择净值来源。需要指定时可传：
+
+```powershell
+.\.venv\Scripts\python.exe examples\scrape_fund_nav.py 15b8aebd8e1d3706 --source 1
+```
 
 ## 验证命令
 
