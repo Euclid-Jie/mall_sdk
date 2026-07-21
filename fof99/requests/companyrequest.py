@@ -6,40 +6,39 @@ from .baserequest import BaseRequest
 
 
 class CompanyInfo(BaseRequest):
-    """提供投资顾问的信息"""
+    """ 提供投资顾问的信息 """
+    _uri = '/company/info'
 
-    _uri = "/company/info"
-
-    def set_params(self, reg_code):
-        self["code"] = reg_code
+    def set_params(self, reg_code='', name_cn='', name_short=''):
+        self['code'] = reg_code
+        self['name_cn'] = name_cn
+        self['name_short'] = name_short
 
 
 class CompanyScale(BaseRequest):
-    """提供投资顾问的信息"""
-
-    _uri = "/company/scale"
+    """ 提供投资顾问的信息 """
+    _uri = '/company/scale'
 
     def set_params(self, code):
-        self["code"] = code
+        self['code'] = code
 
 
 class CompanyShareholder(BaseRequest):
-    """私募管理人股东信息查询"""
-
-    _uri = "/company/shareholder"
+    """ 私募管理人股东信息查询 """
+    _uri = '/company/shareholder'
 
     def set_params(self, code):
-        self["code"] = code
+        self['code'] = code
 
 
 class CompanyFundList(BaseRequest):
-    """提供私募管理人的旗下基金列表。"""
+    """ 提供私募管理人的旗下基金列表。 """
+    _uri = '/company/fund/list'
 
-    _uri = "/company/fund/list"
-
-    def set_params(self, code, product_type=None, page=1, page_size=20):
-        self["code"] = code
+    def set_params(self, code, product_type=None, page=1, page_size=20, fund_state=0):
+        self['code'] = code
         if product_type is not None:
-            self["product_type"] = product_type
-        self["page"] = page
-        self["pagesize"] = page_size
+            self['product_type'] = product_type
+        self['page'] = page
+        self['pagesize'] = page_size
+        self['fund_state'] = fund_state

@@ -11,38 +11,37 @@ import requests
 
 
 class BaseRequest(abc.ABC):
-    """请求抽象父类"""
-
+    """ 请求抽象父类 """
     _uri = None
-    _method = "GET"
+    _method = 'GET'
     _headers = None
     _params = None
     _filterer = None
     _sign_params = True
     _url_concat_sign = False
-    _timestamp = int(time.time())
 
     def __init__(self, appid, appkey, gateway=None):
-        self.set_gateway(gateway).set_appid(appid).set_appkey(appkey)
+        self.set_gateway(gateway) \
+            .set_appid(appid) \
+            .set_appkey(appkey)
         self._debug_info = None
 
     def do_request(self, use_df=False):
-        """执行请求"""
-        url = urllib.parse.urljoin(self._gateway, self._uri)
-        sign_dict = {"app_id": self._appid}
+        """ 执行请求 """
         params = self._params if isinstance(self._params, dict) else {}
+        params.setdefault("app_id", self._appid)
+        params.update({"tm": int(time.time())})
+        sign_dict = {
+            "app_id": self._appid
+        }
         if self._sign_params:
             sign_dict.update(params)
 
-        params.setdefault("app_id", self._appid)
-        sign_dict = dict(
-            filter(
-                lambda item: True if item[1] is not None else False, sign_dict.items()
-            )
-        )
-        params["sign"] = self._make_sign(sign_dict, self._appkey)
+        sign_dict = dict(filter(lambda item: True if item[1] is not None else False, sign_dict.items()))
+        params['sign'] = self._make_sign(sign_dict, self._appkey)
 
-        if self._method.upper() == "POST":
+        url = urllib.parse.urljoin(self._gateway, self._uri)
+        if self._method.upper() == 'POST':
             if self._url_concat_sign:
                 url = f"{url}?app_id={self._appid}&sign={params['sign']}"
             res = self._http_post(url, json=params)
@@ -52,15 +51,19 @@ class BaseRequest(abc.ABC):
             res = self._filterer(res)
 
         if use_df:
-            return pd.DataFrame(res)
+            try:
+                res = pd.DataFrame(res)
+            except:
+                pass
         return res
 
     def get_debug_info(self):
         return self._debug_info
 
     def set_gateway(self, gateway=None):
-        self._gateway = gateway if gateway else "https://mallapi.huofuniu.com"
-        self._gateway = self._gateway.rstrip("/")
+        self._gateway = gateway if gateway \
+            else 'https://mallapi.huofuniu.com'
+        self._gateway = self._gateway.rstrip('/')
         return self
 
     def get_gateway(self):
@@ -81,17 +84,17 @@ class BaseRequest(abc.ABC):
         return self._appkey
 
     def _make_sign(self, params, sign_key):
-        signed_str = ""
+        signed_str = ''
         for key in sorted(params):
-            if key.lower() == "sign" or params[key] is None:
+            if key.lower() == 'sign' \
+                    or params[key] is None:
                 continue
-            signed_str += (
-                "&" + key + "=" + urllib.parse.quote(str(params[key]).encode("utf-8"))
-            )
+            signed_str += '&' + key + '=' + \
+                          urllib.parse.quote(str(params[key]).encode('utf-8'))
         signed_str = signed_str[1:]
         signed_str += sign_key
 
-        return hashlib.md5(signed_str.encode("utf-8")).hexdigest().lower()
+        return hashlib.md5(signed_str.encode('utf-8')).hexdigest().lower()
 
     def _add_param(self, field, value):
         if not self._params:
@@ -112,36 +115,48 @@ class BaseRequest(abc.ABC):
         resp = requests.get(url, params=params, **kwargs)
         if resp.status_code != 200:
             self._debug_info = {
-                "error_code": resp.status_code,
-                "msg": resp.text,
-                "data": None,
+                'error_code': resp.status_code,
+                'msg': resp.text,
+                'data': None
             }
             return
 
         res = resp.json()
-        if ("error_code" not in res) or ("msg" not in res) or ("data" not in res):
-            self._debug_info = {"error_code": 500, "msg": resp.text, "data": None}
+        if ('error_code' not in res) \
+                or ('msg' not in res) \
+                or ('data' not in res):
+            self._debug_info = {
+                'error_code': 500,
+                'msg': resp.text,
+                'data': None
+            }
             return
         self._debug_info = res
-        if res["error_code"] != 0:
+        if res['error_code'] != 0:
             return
-        return res["data"]
+        return res['data']
 
     def _http_post(self, url, json=None, **kwargs):
         resp = requests.post(url, json=json, **kwargs)
         if resp.status_code != 200:
             self._debug_info = {
-                "error_code": resp.status_code,
-                "msg": resp.text,
-                "data": None,
+                'error_code': resp.status_code,
+                'msg': resp.text,
+                'data': None
             }
             return
 
         res = resp.json()
-        if ("error_code" not in res) or ("msg" not in res) or ("data" not in res):
-            self._debug_info = {"error_code": 500, "msg": resp.text, "data": None}
+        if ('error_code' not in res) \
+                or ('msg' not in res) \
+                or ('data' not in res):
+            self._debug_info = {
+                'error_code': 500,
+                'msg': resp.text,
+                'data': None
+            }
             return
         self._debug_info = res
-        if res["error_code"] != 0:
+        if res['error_code'] != 0:
             return
-        return res["data"]
+        return res['data']

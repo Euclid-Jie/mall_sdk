@@ -1,7 +1,7 @@
 # -*- coding: utf-8 -*-
 
-__version__ = "1.0.0"
-__author__ = "fof99.com"
+__version__ = '1.0.0'
+__author__ = 'fof99.com'
 
 from .requests.factorrequest import (
     FactorFutures,
@@ -52,4 +52,10 @@ from .requests.companyrequest import (
 from .requests.traderequest import (
     FundBuyInfo,
     FofInvestCustomerPrice,
+)
+from .requests.marketrequest import (
+    MarketDiscountRate,
+    MarketFutureBasis,
+    MarketCategory,
+    MarketWeekReport,
 )
