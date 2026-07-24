@@ -46,7 +46,9 @@ class FOF99Api:
     def _parse_fund_view_id(fid_or_url: str) -> str:
         fid_or_url = str(fid_or_url).strip()
         if "/fund/view/" in fid_or_url:
-            return fid_or_url.split("/fund/view/", 1)[1].split("?", 1)[0].split("#", 1)[0]
+            return (
+                fid_or_url.split("/fund/view/", 1)[1].split("?", 1)[0].split("#", 1)[0]
+            )
         return fid_or_url
 
     def get_fund_basic_info_from_id(self, fid_or_url: str) -> dict:
@@ -148,7 +150,7 @@ class FOF99Api:
         assert nav_data_for_update.shape[0] > 0, "没有需要更新的数据！"
         # 确认字段
         expected_columns = ["产品代码", "日期", "单位净值", "累计净值"]
-        assert set(nav_data_for_update.columns) > set(
+        assert set(nav_data_for_update.columns) >= set(
             expected_columns
         ), "字段不匹配，请检查！期望字段: {}，实际字段: {}".format(
             expected_columns, nav_data_for_update.columns.tolist()
