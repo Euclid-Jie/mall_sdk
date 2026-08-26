@@ -99,7 +99,7 @@ class FOF99Api:
         self,
         update_nav_data_list: list[dict],
         type: Literal["inner", "company"] = "company",
-    ):
+    ) -> dict:
         # 上传净值数据到火富牛FOF99
         sign = md5(
             f"app_id={self.appid}&tm={int(time.time())}{self.appkey}".encode()
@@ -111,7 +111,34 @@ class FOF99Api:
                 "price_data": update_nav_data_list,
             },
         )
-        print(res.content.decode("utf-8"))
+        print(res.text)
+        res.raise_for_status()
+        try:
+            payload = res.json()
+        except ValueError as exc:
+            raise RuntimeError("FOF99净值上传失败: API 响应不是有效的 JSON") from exc
+        if not isinstance(payload, dict):
+            raise RuntimeError("FOF99净值上传失败: API 响应必须是 JSON 对象")
+
+        data = payload.get("data")
+        success = data.get("success") if isinstance(data, dict) else None
+        fail = data.get("fail") if isinstance(data, dict) else None
+        expected_count = len(update_nav_data_list)
+        success_count = len(success) if isinstance(success, list) else 0
+        if (
+            payload.get("error_code") != 0
+            or not isinstance(data, dict)
+            or bool(fail)
+            or not isinstance(success, list)
+            or success_count != expected_count
+        ):
+            raise RuntimeError(
+                "FOF99净值上传失败: "
+                f"error_code={payload.get('error_code')}, msg={payload.get('msg')!r}, "
+                f"fail={fail!r}, success_count={success_count}, "
+                f"expected_count={expected_count}"
+            )
+        return payload
 
     @staticmethod
     def generate_nav_data_list(sub_nav_data_df: pd.DataFrame) -> list[dict]:
@@ -163,10 +190,14 @@ class FOF99Api:
             "%Y-%m-%d"
         )
         # 分多个chuck上传
+        results = []
         for i in range(0, nav_data_for_update.shape[0], 1000):
             sub_nav_data_df = nav_data_for_update.iloc[i : i + 1000, :]
             update_nav_data_list = self.generate_nav_data_list(sub_nav_data_df)
-            self._update_nav_data_list_to_FOF99(update_nav_data_list, type)
+            results.append(
+                self._update_nav_data_list_to_FOF99(update_nav_data_list, type)
+            )
+        return results
 
     def get_fund_info(self, reg_code: str = "SVZ009"):
         req = FundInfo(self.appid, self.appkey)  # 请求对
