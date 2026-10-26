@@ -41,6 +41,27 @@ pagesize=500
 - `order=1` 为按日期倒序，和页面显示一致。
 - `page/pagesize` 用于分页；`scraper.py` 会自动翻页直到取完 `total`。
 
+## 请求头（User-Agent 必须像浏览器）
+
+`api.huofuniu.com` 的网页接口除 token 外还会按 `User-Agent` 过滤请求：
+
+```text
+User-Agent: Mozilla/5.0 ...        -> error_code=0, data.list 正常返回
+User-Agent: python-requests/2.x    -> error_code=0, data=null（看起来像“没有数据”）
+User-Agent 缺失或为空             -> error_code=0, data=null
+```
+
+这种失败既不带非零 `error_code` 也不带错误文案，非常容易误判成“token 过期”或“接口没有数据”。结论：
+
+- 鉴权只依赖查询参数 `token`；`access-token` 请求头可有可无。`FOF99Api.search_fund()` 同样必须在查询参数中传入 token。
+- `User-Agent` 必须显式设置为浏览器 UA；`FOF99Api._web_headers()` 已统一处理，新增网页接口时复用该方法，不要手写只带 token 的 headers。
+- `error_code=0` 且 `data=null` 表示请求被拦截或 token 无效，**不是**“查无数据”；`FOF99Api` 会抛出 `FOF99ApiError` 明确报出。
+- token 缺失或失效时接口返回 `error_code=-4`（`token required.` / `token check fail`）。
+
+## 管理人接口的 active 过滤
+
+`company/advancedlist` 默认 `active=1` 只返回正常运作的管理人；已注销管理人（`cancel_date` 非空）只有 `active=-1` 才能查到。`get_company_info_from_code()` 先查 `active=1`，没有精确匹配时再回退 `active=-1`；登记编号或名称都不匹配时不把列表首条当作目标，最终查不到才抛 `FOF99CompanyNotFound`。
+
 ## 字段映射
 
 ```text

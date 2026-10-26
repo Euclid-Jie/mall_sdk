@@ -99,6 +99,14 @@ pc  -> change_pct，代码中转换为百分点
 
 净值来源约定：`source=2` 是团队/公司净值，`source=1` 是平台净值。默认抓取应先尝试 `source=2`，为空时回退到 `source=1`。
 
+请求头约定（踩过的坑）：
+
+- `api.huofuniu.com` 的网页接口按 `User-Agent` 过滤请求。使用 requests 默认 UA（`python-requests/*`）、空 UA 或缺失 UA 时，接口返回 HTTP 200 + `error_code=0` + `data=null`，表现得像“没有数据”，实际是请求被拦。
+- 鉴权只依赖查询参数 `token`，`access-token` 请求头可有可无。
+- `FOF99Api.search_fund()` 也必须把 token 放进查询参数；请求头中的 `access-token` 不能替代查询参数鉴权。
+- 新增网页接口时统一复用 `FOF99Api._web_headers()`，不要手写只带 `access-token` 的 headers；返回体用 `FOF99Api._parse_web_payload()` 校验，把 `data=null` 和 `error_code!=0` 显式报错，禁止用 `except:` 兜成“token 过期”。
+- `company/advancedlist` 默认 `active=1` 只返回正常运作管理人，已注销管理人需 `active=-1`；`get_company_info_from_code()` 已做回退，登记编号或名称均未精确匹配时继续回退，最终查不到抛 `FOF99CompanyNotFound`，不能把首条结果当成目标管理人。
+
 ## Git 注意事项
 
 - 开始前先看 `git status --short --branch`。

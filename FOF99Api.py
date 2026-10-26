@@ -30,11 +30,34 @@ except ImportError:
     from scraper import get_fof99_web_token
 
 
+class FOF99ApiError(RuntimeError):
+    """FOF99 网页接口请求失败或返回体不符合预期。"""
+
+
+class FOF99CompanyNotFound(FOF99ApiError):
+    """FOF99 未收录目标管理人（含已注销管理人）。"""
+
+
 class FOF99Api:
-    def __init__(self, appid: str = "", appkey: str = "", token: str = ""):
+    WEB_API_BASE = "https://api.huofuniu.com"
+    WEB_BASE_URL = "https://mp.fof99.com"
+    WEB_USER_AGENT = (
+        "Mozilla/5.0 (Windows NT 10.0; Win64; x64) "
+        "AppleWebKit/537.36 (KHTML, like Gecko) "
+        "Chrome/126.0 Safari/537.36"
+    )
+
+    def __init__(
+        self,
+        appid: str = "",
+        appkey: str = "",
+        token: str = "",
+        timeout: int = 30,
+    ):
         self.appid = appid
         self.appkey = appkey
         self.token = token
+        self.timeout = timeout
 
     def _get_web_token(self) -> str:
         token = self.token or get_fof99_web_token()
@@ -42,6 +65,45 @@ class FOF99Api:
             raise ValueError("请在 FOF99Api(token=...) 或 .env 中配置 FOF99_WEB_TOKEN")
         return token
 
+    def _web_headers(self, referer: str = "/") -> dict:
+        """构造 api.huofuniu.com 网页接口的请求头。
+
+        注意：这些接口除 token 外还按 User-Agent 过滤请求。使用 requests 默认
+        UA（``python-requests/x.y``）、空 UA 或缺少 UA 时，接口仍返回
+        HTTP 200 且 ``error_code=0``，但 ``data`` 为 ``null``，看起来像「没有数据」。
+        所以只带 ``access-token`` 是不够的，必须显式带浏览器 UA。
+        鉴权本身只依赖查询参数 ``token``；``access-token`` 头仅为兼容保留。
+        """
+        if not referer.startswith("http"):
+            referer = f"{self.WEB_BASE_URL}{referer}"
+        return {
+            "Accept": "application/json, text/plain, */*",
+            "Accept-Language": "zh-CN,zh;q=0.9",
+            "Origin": self.WEB_BASE_URL,
+            "Referer": referer,
+            "User-Agent": self.WEB_USER_AGENT,
+            "access-token": self._get_web_token(),
+        }
+
+    @staticmethod
+    def _parse_web_payload(res: requests.Response, action: str) -> dict:
+        """统一校验网页接口返回体，避免把失败当成「查不到数据」。"""
+        res.raise_for_status()
+        try:
+            payload = res.json()
+        except ValueError as exc:
+            raise FOF99ApiError(
+                f"{action}失败: API 响应不是有效的 JSON（{res.text[:200]!r}）"
+            ) from exc
+        if not isinstance(payload, dict):
+            raise FOF99ApiError(f"{action}失败: API 响应必须是 JSON 对象")
+        error_code = payload.get("error_code")
+        if error_code != 0:
+            raise FOF99ApiError(
+                f"{action}失败: error_code={error_code}, msg={payload.get('msg')!r}"
+                "；error_code=-4 表示 token 缺失或失效，请更新 FOF99_WEB_TOKEN"
+            )
+        return payload
     @staticmethod
     def _parse_fund_view_id(fid_or_url: str) -> str:
         fid_or_url = str(fid_or_url).strip()
@@ -62,7 +124,7 @@ class FOF99Api:
             dict: 包含产品名称、备案编号、公司管理规模等字段。
         """
         fid = self._parse_fund_view_id(fid_or_url)
-        url = "https://api.huofuniu.com/newgoapi/funds/analyze"
+        url = f"{self.WEB_API_BASE}/newgoapi/funds/analyze"
         res = requests.get(
             url,
             params={
@@ -70,21 +132,16 @@ class FOF99Api:
                 "id": fid,
                 "url": "",
             },
-            headers={
-                "Accept": "application/json, text/plain, */*",
-                "Origin": "https://mp.fof99.com",
-                "Referer": f"https://mp.fof99.com/fund/view/{fid}",
-            },
-            timeout=30,
+            headers=self._web_headers(f"/fund/view/{fid}"),
+            timeout=self.timeout,
         )
-        res.raise_for_status()
-        payload = res.json()
-        if payload.get("error_code") != 0:
-            raise ValueError(
-                f"获取基金基本信息失败: error_code={payload.get('error_code')}, "
-                f"msg={payload.get('msg')}"
-            )
+        payload = self._parse_web_payload(res, "获取基金基本信息")
         data = payload.get("data") or {}
+        if not data:
+            raise FOF99ApiError(
+                f"获取基金基本信息失败: 接口未返回数据（fid={fid}），"
+                "请检查 token 是否有效或 User-Agent 是否被拦截"
+            )
         return {
             "产品名称": data.get("fund_short_name") or data.get("fund_name"),
             "产品全称": data.get("fund_name"),
@@ -285,23 +342,107 @@ class FOF99Api:
             all_results.append(res)
         return pd.concat(all_results, ignore_index=True)
 
-    def get_company_info_from_code(self, comp_code) -> dict:
-        url = f"https://api.huofuniu.com/newgoapi/company/advancedlist?token={self.token}&keyValue={comp_code}&member_type=%E4%B8%8D%E9%99%90&fund_num=-1&scale=0&found_date=0&active=1&company_manager_active=-1&page=1&pagesize=20&advise_type=0&order_by=fund_num&order=1&isReport=0"
-        headers = {
-            "access-token": self.token,
-        }
-        annlysis_data = requests.get(url=url, headers=headers)
-        try:
-            company_info = annlysis_data.json()["data"]["list"][0]
-        except:
-            raise ValueError("请检查token是否过期")
-        return company_info
+    def get_company_info_from_code(
+        self, comp_code, include_cancelled: bool = True
+    ) -> dict:
+        """按管理人登记编号（或名称）获取 FOF99 管理人信息。
+
+        FOF99 的 ``company/advancedlist`` 默认只返回正常运作的管理人；已注销的
+        管理人（``cancel_date`` 非空）必须用 ``active=-1`` 才能查到。因此这里先查
+        正常运作，查不到再回退到 ``active=-1``，避免把已注销管理人或未收录管理人
+        误判成 token 失效。
+
+        Raises:
+            FOF99CompanyNotFound: FOF99 确实没有收录该管理人。
+            FOF99ApiError: 鉴权、网络或返回体异常。
+        """
+        key_value = str(comp_code).strip()
+        if not key_value:
+            raise ValueError("comp_code 不能为空")
+
+        company = self._find_company(key_value, active="1")
+        if company is None and include_cancelled:
+            company = self._find_company(key_value, active="-1")
+        if company is None:
+            raise FOF99CompanyNotFound(
+                f"FOF99 未收录管理人 {key_value}（active=1 与 active=-1 均无结果）"
+            )
+        return company
+
+    def _find_company(self, key_value: str, active: str) -> dict | None:
+        res = requests.get(
+            f"{self.WEB_API_BASE}/newgoapi/company/advancedlist",
+            params={
+                "token": self._get_web_token(),
+                "keyValue": key_value,
+                "member_type": "不限",
+                "fund_num": "-1",
+                "scale": "0",
+                "found_date": "0",
+                "active": active,
+                "company_manager_active": "-1",
+                "page": "1",
+                "pagesize": "20",
+                "advise_type": "0",
+                "order_by": "fund_num",
+                "order": "1",
+                "isReport": "0",
+            },
+            headers=self._web_headers(f"/company/index?keyValue={key_value}"),
+            timeout=self.timeout,
+        )
+        payload = self._parse_web_payload(res, f"查询管理人 {key_value}")
+        data = payload.get("data")
+        if data is None:
+            raise FOF99ApiError(
+                f"查询管理人 {key_value} 失败: 接口返回 error_code=0 但 data=null"
+                "，通常是 token 失效或 User-Agent 被拦截，而不是没有数据"
+            )
+        if not isinstance(data, dict):
+            raise FOF99ApiError(f"查询管理人 {key_value} 失败: data 格式异常 {data!r}")
+        rows = data.get("list") or []
+        if not isinstance(rows, list):
+            raise FOF99ApiError(
+                f"查询管理人 {key_value} 失败: list 格式异常 {rows!r}"
+            )
+        return self._match_company(rows, key_value)
+
+    @staticmethod
+    def _match_company(rows: list[dict], key_value: str) -> dict | None:
+        """在返回列表中定位目标管理人；没有精确匹配时返回 None。"""
+        if not rows:
+            return None
+        target = str(key_value).strip()
+        target_upper = target.upper()
+        for row in rows:
+            if str(row.get("register_code") or "").strip().upper() == target_upper:
+                return row
+        for row in rows:
+            names = {
+                str(row.get(field) or "").strip()
+                for field in ("name_short", "company_name", "name_cn")
+            }
+            if target in names:
+                return row
+        return None
 
     def search_fund(self, keyword: str) -> list:
-        url = f"https://api.huofuniu.com/newgoapi/fund/global/search?keyValue={keyword}"
-        headers = {"access-token": self.token}
-        res = requests.get(url=url, headers=headers)
-        return res.json().get("data", [])
+        res = requests.get(
+            f"{self.WEB_API_BASE}/newgoapi/fund/global/search",
+            params={"token": self._get_web_token(), "keyValue": keyword},
+            headers=self._web_headers("/fund/index"),
+            timeout=self.timeout,
+        )
+        payload = self._parse_web_payload(res, f"搜索基金 {keyword}")
+        data = payload.get("data")
+        if data is None:
+            raise FOF99ApiError(
+                f"搜索基金 {keyword} 失败: 接口返回 error_code=0 但 data=null"
+                "，通常是 token 失效或 User-Agent 被拦截，而不是没有数据"
+            )
+        if not isinstance(data, list):
+            raise FOF99ApiError(f"搜索基金 {keyword} 失败: data 格式异常 {data!r}")
+        return data
 
     def get_fund_info_from_code(self, registerNo) -> pd.DataFrame:
         """
