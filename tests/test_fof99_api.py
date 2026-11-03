@@ -32,15 +32,18 @@ class UpdateNavTest(unittest.TestCase):
         self.api = FOF99Api("appid", "appkey")
 
     @staticmethod
-    def make_nav_data(row_count):
-        return pd.DataFrame(
-            {
-                "产品代码": ["CODE1"] * row_count,
-                "日期": pd.to_datetime(["2026-08-26"] * row_count),
-                "单位净值": [1.0] * row_count,
-                "累计净值": [1.0] * row_count,
-            }
-        )
+    def make_nav_data(row_count, dates=None, codes=None, names=None):
+        dates = dates if dates is not None else ["2026-08-26"] * row_count
+        codes = codes if codes is not None else ["CODE1"] * row_count
+        data = {
+            "产品代码": codes,
+            "日期": pd.to_datetime(dates),
+            "单位净值": [1.0] * row_count,
+            "累计净值": [1.0] * row_count,
+        }
+        if names is not None:
+            data["产品名称"] = names
+        return pd.DataFrame(data)
 
     @patch("mall_sdk.FOF99Api.requests.post")
     def test_returns_all_successful_chunk_results(self, post):
@@ -48,10 +51,168 @@ class UpdateNavTest(unittest.TestCase):
         second = {"error_code": 0, "msg": "", "data": {"fail": [], "success": ["基金1"]}}
         post.side_effect = [make_response(first), make_response(second)]
 
-        results = self.api.update_nav_to_FOF99(self.make_nav_data(1001))
+        report = self.api.update_nav_to_FOF99(self.make_nav_data(1001))
 
-        self.assertEqual(results, [first, second])
+        self.assertEqual(report.chunks, [first, second])
+        self.assertEqual(len(report.uploaded), 1001)
+        self.assertTrue(report.skipped.empty)
         self.assertEqual(post.call_count, 2)
+
+    @patch("mall_sdk.FOF99Api.requests.post")
+    def test_attributes_rejects_by_product_name_without_extra_requests(self, post):
+        """平台回的是产品名：规范化后能在本地对上代码，就不该重传（保持 1 次请求）。"""
+        post.return_value = make_response(
+            {
+                "error_code": 0,
+                "msg": "",
+                "data": {
+                    "fail": ["睦沣一号:非交易日，无法上传净值"],
+                    "success": ["基金2"],
+                },
+            }
+        )
+        nav_data = self.make_nav_data(
+            2,
+            ["2026-10-31", "2026-10-31"],
+            ["SY7891", "SBUJ72"],
+            ["睦沣一号私募证券投资基金", "凯双天山16号私募证券投资基金"],
+        )
+
+        report = self.api.update_nav_to_FOF99(nav_data)
+
+        self.assertEqual(post.call_count, 1)  # 关键：没有多花请求
+        self.assertEqual(report.uploaded["产品代码"].tolist(), ["SBUJ72"])
+        self.assertEqual(report.skipped["产品代码"].tolist(), ["SY7891"])
+        self.assertEqual(
+            report.skipped["拒收原因"].tolist(), ["非交易日，无法上传净值"]
+        )
+
+    @patch("mall_sdk.FOF99Api.requests.post")
+    def test_attributes_glued_share_class_name(self, post):
+        """实测例子：平台「凯丰凌风2号量化CTAB类」 vs 表内「…（B类份额）」，也要能对。"""
+        post.return_value = make_response(
+            {
+                "error_code": 0,
+                "msg": "",
+                "data": {
+                    "fail": ["凯丰凌风2号量化CTAB类:非交易日，无法上传净值"],
+                    "success": ["基金2"],
+                },
+            }
+        )
+        nav_data = self.make_nav_data(
+            2,
+            ["2026-10-31"] * 2,
+            ["BQG99B", "SBUJ72"],
+            ["凯丰凌风2号量化CTA私募证券投资基金（B类份额）", "凯双天山16号私募证券投资基金"],
+        )
+
+        report = self.api.update_nav_to_FOF99(nav_data)
+
+        self.assertEqual(post.call_count, 1)
+        self.assertEqual(report.skipped["产品代码"].tolist(), ["BQG99B"])
+
+    @patch("mall_sdk.FOF99Api.requests.post")
+    def test_raises_for_attributed_unexpected_reject_reason(self, post):
+        """已归因但原因不在 skip_reasons（如代码不存在）→ 直接报错，且不重传。"""
+        post.return_value = make_response(
+            {
+                "error_code": 0,
+                "msg": "",
+                "data": {
+                    "fail": ["基金甲:代码不存在"],
+                    "success": ["基金乙"],
+                },
+            }
+        )
+        nav_data = self.make_nav_data(
+            2,
+            ["2026-10-30", "2026-10-30"],
+            ["CODE1", "CODE2"],
+            ["基金甲私募证券投资基金", "基金乙私募证券投资基金"],
+        )
+
+        with self.assertRaisesRegex(RuntimeError, "代码不存在"):
+            self.api.update_nav_to_FOF99(nav_data, isolate_failed=True)
+
+        self.assertEqual(post.call_count, 1)
+
+    @patch("mall_sdk.FOF99Api.requests.post")
+    def test_attributed_batch_with_any_non_skip_reason_aborts(self, post):
+        """同批里只要有一个已归因的非 skip 原因，就不能部分静默跳过、也不能重传。"""
+        post.return_value = make_response(
+            {
+                "error_code": 0,
+                "msg": "",
+                "data": {
+                    "fail": [
+                        "睦沣一号:非交易日，无法上传净值",
+                        "基金甲:代码不存在",
+                    ],
+                    "success": ["基金乙"],
+                },
+            }
+        )
+        nav_data = self.make_nav_data(
+            3,
+            ["2026-10-31"] * 3,
+            ["SY7891", "CODE2", "SBUJ72"],
+            [
+                "睦沣一号私募证券投资基金",
+                "基金甲私募证券投资基金",
+                "基金乙私募证券投资基金",
+            ],
+        )
+
+        with self.assertRaisesRegex(RuntimeError, "代码不存在"):
+            self.api.update_nav_to_FOF99(nav_data, isolate_failed=True)
+
+        self.assertEqual(post.call_count, 1)
+
+    def test_normalize_name_keeps_share_class(self):
+        self.assertEqual(
+            FOF99Api._normalize_name("凯丰凌风2号量化CTAB类"),
+            FOF99Api._normalize_name("凯丰凌风2号量化CTA私募证券投资基金（B类份额）"),
+        )
+        self.assertNotEqual(
+            FOF99Api._normalize_name("微观博易-黎夏指增八号"),
+            FOF99Api._normalize_name("微观博易-黎夏指增八号一期"),
+        )
+
+    @patch("mall_sdk.FOF99Api.requests.post")
+    def test_raises_when_reject_names_cannot_be_attributed(self, post):
+        """没有产品名列（无法归因）且 isolate_failed=False → 直接报错，不多花请求。"""
+        post.return_value = make_response(
+            {
+                "error_code": 0,
+                "msg": "",
+                "data": {"fail": ["睦沣一号:非交易日，无法上传净值"], "success": ["基金2"]},
+            }
+        )
+
+        with self.assertRaisesRegex(RuntimeError, "非交易日"):
+            self.api.update_nav_to_FOF99(self.make_nav_data(2))
+
+        self.assertEqual(post.call_count, 1)
+
+    @patch("mall_sdk.FOF99Api.requests.post")
+    def test_empty_input_returns_empty_report_without_request(self, post):
+        """没有待上传数据是正常状态，不该报错、也不该发请求。"""
+        empty = pd.DataFrame(
+            {
+                "产品代码": pd.Series(dtype=str),
+                "日期": pd.Series(dtype="datetime64[ns]"),
+                "单位净值": pd.Series(dtype=float),
+                "累计净值": pd.Series(dtype=float),
+            }
+        )
+
+        report = self.api.update_nav_to_FOF99(empty)
+
+        self.assertEqual(report.chunks, [])
+        self.assertTrue(report.uploaded.empty)
+        self.assertTrue(report.skipped.empty)
+        post.assert_not_called()
 
     @patch("mall_sdk.FOF99Api.requests.post")
     def test_raises_as_soon_as_any_chunk_fails(self, post):
@@ -68,6 +229,173 @@ class UpdateNavTest(unittest.TestCase):
             self.api.update_nav_to_FOF99(self.make_nav_data(2001))
 
         self.assertEqual(post.call_count, 2)
+
+    @patch("mall_sdk.FOF99Api.requests.post")
+    def test_skips_non_trading_day_products_reported_by_api(self, post):
+        """整批被拒时逐产品重传，只把命中「非交易日」的产品计入 skipped。"""
+        batch_fail = {
+            "error_code": 0,
+            "msg": "",
+            "data": {
+                "fail": ["睦沣一号:非交易日，无法上传净值"],
+                "success": ["基金2"],
+            },
+        }
+        code1_fail = {
+            "error_code": 0,
+            "msg": "",
+            "data": {"fail": ["睦沣一号:非交易日，无法上传净值"], "success": []},
+        }
+        code2_ok = {"error_code": 0, "msg": "", "data": {"fail": [], "success": ["基金2"]}}
+        post.side_effect = [
+            make_response(batch_fail),
+            make_response(code1_fail),
+            make_response(code2_ok),
+        ]
+        nav_data = pd.DataFrame(
+            {
+                "产品代码": ["CODE1", "CODE2"],
+                "日期": pd.to_datetime(["2026-10-31", "2026-10-31"]),
+                "单位净值": [1.0, 2.0],
+                "累计净值": [1.0, 2.0],
+            }
+        )
+
+        report = self.api.update_nav_to_FOF99(nav_data, isolate_failed=True)
+
+        self.assertEqual(report.uploaded["产品代码"].tolist(), ["CODE2"])
+        self.assertEqual(report.skipped["产品代码"].tolist(), ["CODE1"])
+        self.assertEqual(
+            report.skipped["拒收原因"].tolist(), ["非交易日，无法上传净值"]
+        )
+        self.assertEqual(post.call_count, 3)
+
+    @patch("mall_sdk.FOF99Api.requests.post")
+    def test_skips_single_product_reject_with_error_code(self, post):
+        """实测形态：单产品拒收回 error_code=10001 + data=null，也要能归因并跳过。"""
+        batch_fail = {
+            "error_code": 0,
+            "msg": "",
+            "data": {"fail": ["睦沣一号:非交易日，无法上传净值"], "success": ["基金2"]},
+        }
+        code1_fail = {
+            "error_code": 10001,
+            "msg": "睦沣一号:非交易日，无法上传净值",
+            "data": None,
+        }
+        code2_ok = {"error_code": 0, "msg": "", "data": {"fail": [], "success": ["基金2"]}}
+        post.side_effect = [
+            make_response(batch_fail),
+            make_response(code1_fail),
+            make_response(code2_ok),
+        ]
+        nav_data = pd.DataFrame(
+            {
+                "产品代码": ["CODE1", "CODE2"],
+                "日期": pd.to_datetime(["2026-10-31", "2026-10-31"]),
+                "单位净值": [1.0, 2.0],
+                "累计净值": [1.0, 2.0],
+            }
+        )
+
+        report = self.api.update_nav_to_FOF99(nav_data, isolate_failed=True)
+
+        self.assertEqual(report.uploaded["产品代码"].tolist(), ["CODE2"])
+        self.assertEqual(report.skipped["产品代码"].tolist(), ["CODE1"])
+        self.assertEqual(
+            report.skipped["拒收原因"].tolist(), ["非交易日，无法上传净值"]
+        )
+
+    @patch("mall_sdk.FOF99Api.requests.post")
+    def test_batch_error_code_with_product_reason_goes_to_isolation(self, post):
+        """整批回 error_code 非 0 但 msg 是「产品名:原因」→ 仍要进入逐产品定位。"""
+        batch_reject = {
+            "error_code": 10001,
+            "msg": "睦沣一号:非交易日，无法上传净值",
+            "data": None,
+        }
+        single_reject = {
+            "error_code": 10001,
+            "msg": "睦沣一号:非交易日，无法上传净值",
+            "data": None,
+        }
+        post.side_effect = [make_response(batch_reject), make_response(single_reject)]
+
+        report = self.api.update_nav_to_FOF99(self.make_nav_data(2), isolate_failed=True)
+
+        self.assertTrue(report.uploaded.empty)
+        self.assertEqual(len(report.skipped), 2)
+
+    @patch("mall_sdk.FOF99Api.requests.post")
+    def test_raises_for_unexpected_reject_reason(self, post):
+        """原因不在 skip_reasons 里（如代码不存在）必须报错，不能静静吞掉。"""
+        batch_fail = {
+            "error_code": 0,
+            "msg": "",
+            "data": {"fail": ["基金2:代码不存在"], "success": ["基金1"]},
+        }
+        code1_ok = {"error_code": 0, "msg": "", "data": {"fail": [], "success": ["基金1"]}}
+        code2_fail = {
+            "error_code": 0,
+            "msg": "",
+            "data": {"fail": ["基金2:代码不存在"], "success": []},
+        }
+        post.side_effect = [
+            make_response(batch_fail),
+            make_response(code1_ok),
+            make_response(code2_fail),
+        ]
+        nav_data = pd.DataFrame(
+            {
+                "产品代码": ["CODE1", "CODE2"],
+                "日期": pd.to_datetime(["2026-10-30", "2026-10-30"]),
+                "单位净值": [1.0, 2.0],
+                "累计净值": [1.0, 2.0],
+            }
+        )
+
+        with self.assertRaisesRegex(RuntimeError, "CODE2: 代码不存在"):
+            self.api.update_nav_to_FOF99(nav_data, isolate_failed=True)
+
+    @patch("mall_sdk.FOF99Api.requests.post")
+    def test_extra_skip_reason_can_be_configured(self, post):
+        """传 skip_reasons=("非交易日", "净值数据为空") 可一并剔掉空数据类拒收。"""
+        batch_fail = {
+            "error_code": 0,
+            "msg": "",
+            "data": {"fail": ["量派聚核46号:净值数据为空"], "success": []},
+        }
+        single_fail = {
+            "error_code": 0,
+            "msg": "",
+            "data": {"fail": ["量派聚核46号:净值数据为空"], "success": []},
+        }
+        post.side_effect = [make_response(batch_fail), make_response(single_fail)]
+
+        report = self.api.update_nav_to_FOF99(
+            self.make_nav_data(
+                1, ["2026-10-31"], ["SB4893"], ["量派聚核46号私募证券投资基金A"]
+            ),
+            skip_reasons=("非交易日", "净值数据为空"),
+        )
+
+        self.assertTrue(report.uploaded.empty)
+        self.assertEqual(len(report.skipped), 1)
+
+    @patch("mall_sdk.FOF99Api.requests.post")
+    def test_isolate_failed_false_keeps_old_behaviour(self, post):
+        post.return_value = make_response(
+            {
+                "error_code": 0,
+                "msg": "",
+                "data": {"fail": ["睦沣一号:非交易日，无法上传净值"], "success": ["基金2"]},
+            }
+        )
+
+        with self.assertRaisesRegex(RuntimeError, "非交易日"):
+            self.api.update_nav_to_FOF99(self.make_nav_data(2), isolate_failed=False)
+
+        self.assertEqual(post.call_count, 1)
 
     @patch("mall_sdk.FOF99Api.requests.post")
     def test_raises_when_response_contains_failed_funds(self, post):

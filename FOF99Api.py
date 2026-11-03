@@ -1,6 +1,7 @@
 import time
 import requests
-from typing import Literal
+from dataclasses import dataclass, field
+from typing import Literal, Optional, Sequence
 from hashlib import md5
 import pandas as pd
 
@@ -28,6 +29,27 @@ except ImportError:
         CompanyInfo,
     )
     from scraper import get_fof99_web_token
+
+
+# 拒收原因中命中这些关键词时，视为「预期内的拒收」（数据不上传，但不算失败）
+DEFAULT_SKIP_REASONS = ("非交易日",)
+
+
+@dataclass
+class NavUploadReport:
+    """净值批量上传结果。
+
+    Attributes:
+        chunks: 各批次 API 原始返回，便于排查。
+        uploaded: 实际上传成功的净值行。
+        skipped: 被火富牛拒收且命中 `skip_reasons` 的净值行，附加一列 `拒收原因`。
+            调用方应把它们标记为已处理，否则每次运行都会重复读到同一批数据、
+            而且永远推不上去。
+    """
+
+    chunks: list[dict] = field(default_factory=list)
+    uploaded: pd.DataFrame = field(default_factory=pd.DataFrame)
+    skipped: pd.DataFrame = field(default_factory=pd.DataFrame)
 
 
 class FOF99ApiError(RuntimeError):
@@ -152,12 +174,38 @@ class FOF99Api:
             "company_id": data.get("company_id"),
         }
 
-    def _update_nav_data_list_to_FOF99(
+    @staticmethod
+    def _parse_fail_item(item) -> tuple[str, str]:
+        """拆出火富牛拒收明细里的 (产品名, 原因)，形如「睦沣一号:非交易日，无法上传净值」。"""
+        text = str(item)
+        for sep in (":", "："):
+            if sep in text:
+                name, _, reason = text.partition(sep)
+                return name.strip(), reason.strip()
+        return text.strip(), ""
+
+    @classmethod
+    def _payload_error(
+        cls, payload: dict, expected_count: int, extra_hint: str = ""
+    ) -> RuntimeError:
+        """把不达预期的响应体统一构造成 RuntimeError。"""
+        data = payload.get("data")
+        fail = data.get("fail") if isinstance(data, dict) else None
+        success = data.get("success") if isinstance(data, dict) else None
+        success_count = len(success) if isinstance(success, list) else 0
+        return RuntimeError(
+            "FOF99净值上传失败: "
+            f"error_code={payload.get('error_code')}, msg={payload.get('msg')!r}, "
+            f"fail={fail!r}, success_count={success_count}, "
+            f"expected_count={expected_count}{extra_hint}"
+        )
+
+    def _post_raw(
         self,
         update_nav_data_list: list[dict],
         type: Literal["inner", "company"] = "company",
     ) -> dict:
-        # 上传净值数据到火富牛FOF99
+        """发送请求并解析 JSON，**不做业务校验**（error_code 由调用方判断）。"""
         sign = md5(
             f"app_id={self.appid}&tm={int(time.time())}{self.appkey}".encode()
         ).hexdigest()
@@ -176,25 +224,33 @@ class FOF99Api:
             raise RuntimeError("FOF99净值上传失败: API 响应不是有效的 JSON") from exc
         if not isinstance(payload, dict):
             raise RuntimeError("FOF99净值上传失败: API 响应必须是 JSON 对象")
+        return payload
 
-        data = payload.get("data")
-        success = data.get("success") if isinstance(data, dict) else None
-        fail = data.get("fail") if isinstance(data, dict) else None
+    def _post_nav_data_list(
+        self,
+        update_nav_data_list: list[dict],
+        type: Literal["inner", "company"] = "company",
+    ) -> dict:
+        """发送并保证拿到 `error_code == 0` 且 `data` 是对象的响应。"""
+        payload = self._post_raw(update_nav_data_list, type)
+        if payload.get("error_code") != 0 or not isinstance(payload.get("data"), dict):
+            raise self._payload_error(payload, len(update_nav_data_list))
+        return payload
+
+    def _update_nav_data_list_to_FOF99(
+        self,
+        update_nav_data_list: list[dict],
+        type: Literal["inner", "company"] = "company",
+    ) -> dict:
+        """上传并校验：只要有一个产品被拒就报错（不做任何剔除）。"""
+        payload = self._post_nav_data_list(update_nav_data_list, type)
+        data = payload["data"]
+        success = data.get("success")
+        fail = data.get("fail")
         expected_count = len(update_nav_data_list)
         success_count = len(success) if isinstance(success, list) else 0
-        if (
-            payload.get("error_code") != 0
-            or not isinstance(data, dict)
-            or bool(fail)
-            or not isinstance(success, list)
-            or success_count != expected_count
-        ):
-            raise RuntimeError(
-                "FOF99净值上传失败: "
-                f"error_code={payload.get('error_code')}, msg={payload.get('msg')!r}, "
-                f"fail={fail!r}, success_count={success_count}, "
-                f"expected_count={expected_count}"
-            )
+        if bool(fail) or not isinstance(success, list) or success_count != expected_count:
+            raise self._payload_error(payload, expected_count)
         return payload
 
     @staticmethod
@@ -220,18 +276,177 @@ class FOF99Api:
             )
         return update_nav_data_list
 
+    @staticmethod
+    def _normalize_name(name) -> str:
+        """把产品名规范化，用于把平台回的「产品名」对到表里的行。
+
+        只去掉不影响区分度的通称/份额后缀，例如：
+        「凯丰凌风2号量化CTA私募证券投资基金（B类份额）」→「凯丰凌风2号量化CTAB」
+        「凯丰凌风2号量化CTAB类」（平台回包）→「凯丰凌风2号量化CTAB」
+        两者相等，于是无需任何额外请求就能归因。
+        """
+        text = str(name).strip().replace("（", "(").replace("）", ")")
+        for token in (
+            "私募证券投资基金",
+            "私募投资基金",
+            "证券投资基金",
+            "私募基金",
+            "类份额",
+            "份额",
+            "基金",
+            "(",
+            ")",
+            " ",
+            "　",
+        ):
+            text = text.replace(token, "")
+        return text.rstrip("类")
+
+    @classmethod
+    def _match_fail_codes(
+        cls, fail_entries: Sequence, nav_df: pd.DataFrame, name_col: Optional[str]
+    ) -> tuple[dict[str, str], list[str]]:
+        """把平台的「产品名:原因」反推到产品代码，**不产生任何请求**。
+
+        Returns:
+            (code -> 原因, 未能归因的 fail 原文列表)
+        """
+        parsed = [cls._parse_fail_item(item) for item in fail_entries]
+        if not name_col or name_col not in nav_df.columns:
+            return {}, [f"{name}:{reason}" if reason else str(name) for name, reason in parsed]
+        unique = nav_df.drop_duplicates("产品代码")
+        normalized = {
+            code: cls._normalize_name(name)
+            for code, name in zip(unique["产品代码"], unique[name_col])
+        }
+        matched: dict[str, str] = {}
+        unmatched: list[str] = []
+        for name, reason in parsed:
+            target = cls._normalize_name(name)
+            exact = [code for code, norm in normalized.items() if norm == target]
+            if len(exact) == 1:
+                matched[exact[0]] = reason
+                continue
+            if not exact and len(target) >= 4:
+                prefix = [
+                    code
+                    for code, norm in normalized.items()
+                    if norm.startswith(target) or target.startswith(norm)
+                ]
+                if len(prefix) == 1:
+                    matched[prefix[0]] = reason
+                    continue
+            unmatched.append(f"{name}:{reason}" if reason else str(name))
+        return matched, unmatched
+
+    @classmethod
+    def _should_isolate(cls, payload: dict, skip_reasons: Sequence[str]) -> bool:
+        """整批回包是否值得拆成单产品重传来定位。
+
+        - `data.fail` 非空：产品级拒收，但应由「名字归因」先处理，只有归因失败才值得重传；
+        - `error_code` 非 0 但原因命中 `skip_reasons`（如「睦沣一号:非交易日…」）：定位后能跳过；
+        - 其余（签名错、app_id 无效、代码不存在等）：直接报错，不值得打 N 次请求。
+        """
+        data = payload.get("data")
+        if isinstance(data, dict) and data.get("fail"):
+            return True
+        if payload.get("error_code") == 0:
+            return False
+        reason = cls._parse_fail_item(payload.get("msg"))[1] or str(payload.get("msg"))
+        return any(key in reason for key in skip_reasons)
+
+    def _isolate_failed_products(
+        self,
+        sub_nav_data_df: pd.DataFrame,
+        type: Literal["inner", "company"],
+        skip_reasons: Sequence[str],
+    ) -> tuple[list[pd.DataFrame], list[pd.DataFrame], list[str]]:
+        """逐个产品重传，把「哪个产品被拒、因为什么」锛定到代码级别。
+
+        火富牛的 fail 明细只给出平台侧产品名（与邮件/上游表里的名称不一定一致），
+        无法可靠反推到代码，所以用「一产品一请求」来清除这个歧义。
+
+        单产品请求的拒收有两种形态（都已实测遇到）：
+        - `{"error_code": 0, "data": {"fail": ["产品名:原因"], "success": []}}`
+        - `{"error_code": 10001, "msg": "产品名:原因", "data": null}`
+        两种都能归因到本请求唯一的那只产品。
+        """
+        uploaded, skipped, failures = [], [], []
+        for _, group in sub_nav_data_df.groupby("产品代码", sort=False):
+            payload = self._post_raw(self.generate_nav_data_list(group), type)
+            data = payload.get("data")
+            fail = data.get("fail") if isinstance(data, dict) else None
+            code = group["产品代码"].iloc[0]
+            if payload.get("error_code") == 0 and not fail:
+                uploaded.append(group)
+                continue
+            if payload.get("error_code") == 0:
+                reasons = []
+                for item in fail:
+                    _, reason = self._parse_fail_item(item)
+                    reason = reason or str(item)
+                    if reason not in reasons:
+                        reasons.append(reason)
+            else:
+                # error_code 非 0 时原因在 msg 里，整个请求只有一只产品，仍可归因
+                reasons = [
+                    self._parse_fail_item(payload.get("msg"))[1]
+                    or str(payload.get("msg") or payload)
+                ]
+            reason_text = "；".join(reasons)
+            if any(key in reason_text for key in skip_reasons):
+                skipped.append(group.assign(拒收原因=reason_text))
+            else:
+                failures.append(f"{code}: {reason_text}")
+        return uploaded, skipped, failures
+
     def update_nav_to_FOF99(
         self,
         nav_data_for_update: pd.DataFrame,
         type: Literal["inner", "company"] = "company",
-    ) -> list[dict]:
+        *,
+        isolate_failed: bool = False,
+        skip_reasons: Sequence[str] = DEFAULT_SKIP_REASONS,
+        name_col: Optional[str] = "产品名称",
+    ) -> NavUploadReport:
         """
-        转换数据格式并上传到FOF99
-        Parameters
+        转换数据格式并上传到FOF99。
+
+        火富牛按产品维度返回成败（`data.fail` 是「产品名:原因」列表），
+        而**只要有一个产品被拒，整批就不算成功**。处理策略（按请求次数从省到贵）：
+
+        1. **名字归因（默认，零额外请求）**：用 `data.fail` 里的产品名，
+           经 `_normalize_name` 规范化后直接对到 `name_col` 列，得到拒收的产品代码。
+           既然成功与拒收的总数能对上（平台已收下成功那些），就不必重传，
+           只把拒收行计入 `skipped`。
+        2. **逐产品重传（`isolate_failed=True`，默认关闭）**：名字归因不了时才用，
+           需要额外 N 次请求（N = 本批产品数），会消耗接口额度。
+        3. 若两者都不适用，直接报错并原样附上平台回包。
+
+        Args:
+            nav_data_for_update: 含 [产品代码, 日期, 单位净值, 累计净值] 的净值数据。
+            type: 上传接口类型，inner / company。
+            isolate_failed: 名字归因失败时是否逐产品重传定位（费额度，默认关闭）。
+            skip_reasons: 拒收原因包含其中任一关键词时就「不计为失败」。
+            name_col: 用于归因的产品名列；表里没有该列时自动退化为无归因。
+
+        Returns:
+            NavUploadReport: uploaded 为已上传成功的行；skipped 为被跳过的行
+            （含 `拒收原因` 列），**调用方应将其标记为已处理**。
+            传入空表时返回空报告、不发起任何请求。
         """
+        if name_col is not None and name_col not in nav_data_for_update.columns:
+            name_col = None
         # 防止修改原数据
         nav_data_for_update = nav_data_for_update.copy()
-        assert nav_data_for_update.shape[0] > 0, "没有需要更新的数据！"
+        # 没有待上传数据是正常状态（例如全部被清洗规则剔除），不是错误：
+        # 返回空报告，不发任何请求。
+        if nav_data_for_update.shape[0] == 0:
+            return NavUploadReport(
+                chunks=[],
+                uploaded=nav_data_for_update,
+                skipped=nav_data_for_update,
+            )
         # 确认字段
         expected_columns = ["产品代码", "日期", "单位净值", "累计净值"]
         assert set(nav_data_for_update.columns) >= set(
@@ -246,15 +461,100 @@ class FOF99Api:
         nav_data_for_update["日期"] = nav_data_for_update["日期"].dt.strftime(
             "%Y-%m-%d"
         )
+
+        chunks: list[dict] = []
+        uploaded_parts: list[pd.DataFrame] = []
+        skipped_parts: list[pd.DataFrame] = []
+        failures: list[str] = []
         # 分多个chuck上传
-        results = []
         for i in range(0, nav_data_for_update.shape[0], 1000):
             sub_nav_data_df = nav_data_for_update.iloc[i : i + 1000, :]
             update_nav_data_list = self.generate_nav_data_list(sub_nav_data_df)
-            results.append(
-                self._update_nav_data_list_to_FOF99(update_nav_data_list, type)
+            payload = self._post_raw(update_nav_data_list, type)
+            chunks.append(payload)
+            expected_count = len(update_nav_data_list)
+            data = payload.get("data")
+            fail = data.get("fail") if isinstance(data, dict) else None
+            success = data.get("success") if isinstance(data, dict) else None
+            success_count = len(success) if isinstance(success, list) else 0
+            if (
+                payload.get("error_code") == 0
+                and not fail
+                and success_count == expected_count
+            ):
+                uploaded_parts.append(sub_nav_data_df)
+                continue
+
+            # 零额外请求的路径：用平台回的产品名在本地归因到代码。
+            # 成功/拒收总数能对上，就说明每个产品都已得到结论（成功的平台已收下），
+            # 因此只需剔除被拒收的行，不必重传。
+            if fail and success_count + len(fail) == expected_count:
+                reason_by_code, unmatched = self._match_fail_codes(
+                    fail, sub_nav_data_df, name_col
+                )
+                if reason_by_code and not unmatched:
+                    # 归因成功不等于可以跳过：只有命中 skip_reasons 的原因才算「预期内拒收」。
+                    # 其余（如「代码不存在」）必须立刻报错，否则会被当成本批的 skipped，
+                    # 调用方打上「已处理」标记后问题就永久静默了。
+                    unexpected = {
+                        code: reason
+                        for code, reason in reason_by_code.items()
+                        if not any(key in reason for key in skip_reasons)
+                    }
+                    if unexpected:
+                        raise self._payload_error(
+                            payload,
+                            expected_count,
+                            "；已归因的非预期拒收（原因未命中 skip_reasons）: "
+                            + "；".join(
+                                f"{code}: {reason}"
+                                for code, reason in unexpected.items()
+                            ),
+                        )
+                    skipped_mask = sub_nav_data_df["产品代码"].isin(reason_by_code)
+                    skipped_part = sub_nav_data_df[skipped_mask].copy()
+                    skipped_part["拒收原因"] = skipped_part["产品代码"].map(
+                        reason_by_code
+                    )
+                    skipped_parts.append(skipped_part)
+                    uploaded_parts.append(sub_nav_data_df[~skipped_mask])
+                    print(
+                        f"本批 {len(fail)} 个产品被拒，已按产品名归因到代码"
+                        f"（无额外请求）：{sorted(reason_by_code)}"
+                    )
+                    continue
+                print(f"⚠️ 有 {len(unmatched)} 个拒收产品名无法归因：{unmatched}")
+
+            product_level = bool(fail) or self._should_isolate(payload, skip_reasons)
+            if not isolate_failed or not product_level:
+                raise self._payload_error(payload, expected_count)
+            print(
+                f"该批有拒收（fail={fail!r}），逐个产品重传以定位原因"
+                f"（本批 {expected_count} 个产品，需要 {expected_count} 次请求）…"
             )
-        return results
+            up, skipped, failed = self._isolate_failed_products(
+                sub_nav_data_df, type, skip_reasons
+            )
+            uploaded_parts.extend(up)
+            skipped_parts.extend(skipped)
+            failures.extend(failed)
+
+        if failures:
+            raise RuntimeError(
+                "FOF99净值上传失败（非预期拒收，已上传的不会回写，重跑即可重传）：\n  "
+                + "\n  ".join(failures)
+            )
+
+        def _concat(parts: list[pd.DataFrame]) -> pd.DataFrame:
+            return (
+                pd.concat(parts, ignore_index=False)
+                if parts
+                else nav_data_for_update.iloc[0:0].copy()
+            )
+
+        return NavUploadReport(
+            chunks=chunks, uploaded=_concat(uploaded_parts), skipped=_concat(skipped_parts)
+        )
 
     def get_fund_info(self, reg_code: str = "SVZ009"):
         req = FundInfo(self.appid, self.appkey)  # 请求对

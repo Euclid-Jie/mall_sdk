@@ -77,7 +77,7 @@ api = FOF99Api(appid="your-appid", appkey="your-appkey", token="your-web-token")
 - `get_company_info_from_code(comp_code)`：通过网页接口查询管理人信息。
 - `get_fund_info_from_code(registerNo)`：通过管理人登记编号查询管理人/基金相关信息。
 - `get_fund_basic_info_from_id(fid_or_url)`：通过 FOF99 网页基金 ID 或详情页 URL 查询产品名称、备案编号、公司管理规模等基本信息。
-- `update_nav_to_FOF99(nav_data_for_update, type)`：上传团队或内部净值。
+- `update_nav_to_FOF99(nav_data_for_update, type, *, isolate_failed=False, skip_reasons=("非交易日",), name_col="产品名称")`：上传团队或内部净值，按平台返回的拒收原因剔除预期内的拒收，返回 `NavUploadReport`。
 
 示例：
 
@@ -88,6 +88,48 @@ api = FOF99Api(appid="your-appid", appkey="your-appkey")
 df = api.get_fund_price(reg_code="SVZ009", start_date="2024-01-01")
 print(df.head())
 ```
+
+## 净值上传与被拒处理
+
+火富牛**按产品维度返回成败**：`data.success` / `data.fail` 里是平台侧产品名，
+而**只要有一个产品被拒，整批就不算成功**。SDK 因此不用本地交易日历，而是**以平台返回的拒收原因作为唯一事实来源**：
+
+```python
+report = FOF99Api(appid, appkey).update_nav_to_FOF99(nav_df)
+print(len(report.uploaded), len(report.skipped))
+
+# 关键：被拒的行没进平台，调用方必须自行标记为已处理，
+# 否则每次运行都会重复读到同一批数据（例如写 sync_at = 哨兵时间）
+```
+
+处理流程（**按请求次数从省到贵**）：
+
+1. 整批上传（每 1000 行一批）。全部成功 → 直接返回，**只 1 次请求**。
+2. **名字归因（默认，零额外请求）**：`data.fail` 里是平台侧产品名（如 `睦沣一号:非交易日…`），
+   经 `_normalize_name` 规范化（去掉 `私募证券投资基金`/`份额`/括号等通称）后，
+   直接对到 `name_col`（默认 `产品名称`）列 → 得到被拒的产品代码。
+   只要 `success_count + len(fail) == 产品数`（每个产品都有结论），就**不重传**，
+   平台已收下成功的那些，本地只把被拒行计入 `skipped`。
+3. **逐产品重传（`isolate_failed=True`，默认关闭）**：名字归因不了时才用。
+   **代价是额外 N 次请求（N = 本批产品数），会消耗接口额度**，所以默认不开。
+4. 两道都不适用 → 直接报错并原样附上平台回包（不白花额度）。
+
+归一化实例（实测）：
+
+| 平台回的产品名 | 表里的列名 | 归一化后 |
+|---|---|---|
+| `凯丰凌风2号量化CTAB类` | `凯丰凌风2号量化CTA私募证券投资基金（B类份额）` | 都是 `凯丰凌风2号量化CTAB` |
+| `睦沣一号` | `睦沣一号私募证券投资基金` | 都是 `睦沣一号` |
+| `量派聚核46号` | `量派聚核46号私募证券投资基金A` | 前缀匹配 |
+
+> 归因歧义时（一个名字对上多只产品）不做猜测，直接当「无法归因」处理。
+> 席位类/期数后缀不会被归并：`…黎夏指增八号` ≠ `…黎夏指增八号一期`。
+
+参数：
+
+- `skip_reasons`：要一并跳过其它拒收时传入，如 `("非交易日", "净值数据为空")`。
+- `isolate_failed=True`：归因不了时逐产品重传（费额度）。
+- `name_col`：用于归因的产品名列；表里没有该列时自动退化为无归因。
 
 ## 网页净值抓取
 
