@@ -7,6 +7,7 @@ from mall_sdk.FOF99Api import (
     FOF99Api,
     FOF99ApiError,
     FOF99CompanyNotFound,
+    NavUploadPartialFailure,
 )
 
 
@@ -411,6 +412,149 @@ class UpdateNavTest(unittest.TestCase):
             self.api._update_nav_data_list_to_FOF99(
                 [{"code": "CODE1", "nets": []}, {"code": "CODE2", "nets": []}]
             )
+
+
+class UpdateNavProgressTest(unittest.TestCase):
+    """回归：部分批次被拒时，已上传批次必须能立即回写，否则下次整批重传。"""
+
+    def setUp(self):
+        self.api = FOF99Api("appid", "appkey")
+        self.marked: list[tuple[list[str], int]] = []
+
+    def collect(self, report):
+        self.marked.append(
+            (report.uploaded["产品代码"].tolist(), len(report.skipped))
+        )
+
+    @staticmethod
+    def nav(codes):
+        return pd.DataFrame(
+            {
+                "产品代码": codes,
+                "日期": pd.to_datetime(["2026-10-30"] * len(codes)),
+                "单位净值": [1.0] * len(codes),
+                "累计净值": [1.0] * len(codes),
+                "产品名称": [f"{code}号私募证券投资基金" for code in codes],
+            }
+        )
+
+    @patch("mall_sdk.FOF99Api.requests.post")
+    def test_on_chunk_fires_for_each_chunk_before_failure(self, post):
+        """第 2 批有产品被非预期拒收，第 1 批的进度绝不能丢。"""
+        ok = {"error_code": 0, "msg": "", "data": {"fail": [], "success": ["A"]}}
+        reject = {
+            "error_code": 0,
+            "msg": "",
+            "data": {"fail": ["B号:净值日期不能早于基金成立日期"], "success": []},
+        }
+        post.side_effect = [make_response(ok), make_response(reject)]
+        # 1001 行 → 两批：第 1 批 1000 行 CODE1，第 2 批 1 行 CODE2
+        nav_data = pd.DataFrame(
+            {
+                "产品代码": ["CODE1"] * 1000 + ["CODE2"],
+                "日期": pd.to_datetime(["2026-10-30"] * 1001),
+                "单位净值": [1.0] * 1001,
+                "累计净值": [1.0] * 1001,
+                "产品名称": ["A号私募证券投资基金"] * 1000
+                + ["B号私募证券投资基金"],
+            }
+        )
+
+        with self.assertRaises(NavUploadPartialFailure) as ctx:
+            self.api.update_nav_to_FOF99(nav_data, on_chunk=self.collect)
+
+        # 第 1 批在上报错前就已经回调（这才是「不白烧额度」的关键）
+        self.assertEqual(set(self.marked[0][0]), {"CODE1"})
+        self.assertEqual(len(self.marked[0][0]), 1000)
+        # 被拒的那批只把失败行留给调用方，不可标记
+        self.assertEqual(ctx.exception.report.failed["产品代码"].tolist(), ["CODE2"])
+        self.assertIn("净值日期不能早于基金成立日期", str(ctx.exception))
+        self.assertEqual(post.call_count, 2)
+
+    @patch("mall_sdk.FOF99Api.requests.post")
+    def test_unattributable_fail_name_falls_back_to_success_names(self, post):
+        """fail 里的名字对不上表，但 success 能对上 → 仍零重传，且只标记平台确认的行。"""
+        post.return_value = make_response(
+            {
+                "error_code": 0,
+                "msg": "",
+                "data": {
+                    "fail": ["平台侧完全不同的名字:净值日期不能早于基金成立日期"],
+                    "success": ["C号"],
+                },
+            }
+        )
+        nav_data = pd.DataFrame(
+            {
+                "产品代码": ["CODE1", "CODE2"],
+                "日期": pd.to_datetime(["2026-10-30", "2026-10-30"]),
+                "单位净值": [1.0, 1.0],
+                "累计净值": [1.0, 1.0],
+                "产品名称": ["D号私募证券投资基金", "C号私募证券投资基金"],
+            }
+        )
+
+        with self.assertRaises(NavUploadPartialFailure) as ctx:
+            self.api.update_nav_to_FOF99(nav_data, on_chunk=self.collect)
+
+        self.assertEqual(post.call_count, 1)  # 关键：没有逐产品重传
+        self.assertEqual(len(self.marked), 1)
+        self.assertEqual(self.marked[0][0], ["CODE2"])  # 只有平台确认的 C号→CODE2
+        self.assertEqual(ctx.exception.report.failed["产品代码"].tolist(), ["CODE1"])
+        self.assertEqual(
+            ctx.exception.report.failed["拒收原因"].tolist(),
+            ["平台拒收（原因未能归因）"],
+        )
+
+    @patch("mall_sdk.FOF99Api.requests.post")
+    def test_partial_failure_still_uploads_remaining_chunks(self, post):
+        """一个产品被拒不该让后面所有批都传不上去（否则每轮都卡在同一处）。"""
+        first = {
+            "error_code": 0,
+            "msg": "",
+            "data": {"fail": ["B号:净值日期不能早于基金成立日期"], "success": ["A号"]},
+        }
+        second = {"error_code": 0, "msg": "", "data": {"fail": [], "success": ["C号"]}}
+        post.side_effect = [make_response(first), make_response(second)]
+        # 第 1 批（1000 行）里有一个被拒；第 2 批（1 行）应该照传不误
+        nav_data = pd.DataFrame(
+            {
+                "产品代码": ["CODEBAD"] + ["CODE2"] * 999 + ["CODE3"],
+                "日期": pd.to_datetime(["2026-10-30"] * 1001),
+                "单位净值": [1.0] * 1001,
+                "累计净值": [1.0] * 1001,
+                "产品名称": ["B号私募证券投资基金"]
+                + ["A号私募证券投资基金"] * 999
+                + ["C号私募证券投资基金"],
+            }
+        )
+
+        with self.assertRaises(NavUploadPartialFailure) as ctx:
+            self.api.update_nav_to_FOF99(nav_data, on_chunk=self.collect)
+
+        self.assertEqual(post.call_count, 2)
+        # 第 1 批里被平台收下的 999 行、第 2 批的 1 行，都已经回调
+        self.assertEqual(len(self.marked), 2)
+        self.assertEqual(set(self.marked[0][0]), {"CODE2"})
+        self.assertEqual(len(self.marked[0][0]), 999)
+        self.assertEqual(self.marked[1][0], ["CODE3"])
+        self.assertEqual(ctx.exception.report.failed["产品代码"].tolist(), ["CODEBAD"])
+
+    @patch("mall_sdk.FOF99Api.requests.post")
+    def test_hard_error_keeps_previous_chunks_progress(self, post):
+        """硬失败（签名/代码不存在）仍立即报错，但前面批次的进度已经回调过。"""
+        ok = {"error_code": 0, "msg": "", "data": {"fail": [], "success": ["A"]}}
+        hard = {"error_code": 1, "msg": "基金：BTE26B不存在;", "data": None}
+        post.side_effect = [make_response(ok), make_response(hard)]
+
+        with self.assertRaisesRegex(RuntimeError, "BTE26B不存在"):
+            self.api.update_nav_to_FOF99(
+                self.nav(["CODE1"] * 1000 + ["CODE2"]), on_chunk=self.collect
+            )
+
+        self.assertEqual(len(self.marked), 1)
+        self.assertEqual(len(self.marked[0][0]), 1000)
+        self.assertEqual(post.call_count, 2)
 
 
 class CompanyInfoTest(unittest.TestCase):

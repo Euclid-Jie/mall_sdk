@@ -77,7 +77,7 @@ api = FOF99Api(appid="your-appid", appkey="your-appkey", token="your-web-token")
 - `get_company_info_from_code(comp_code)`：通过网页接口查询管理人信息。
 - `get_fund_info_from_code(registerNo)`：通过管理人登记编号查询管理人/基金相关信息。
 - `get_fund_basic_info_from_id(fid_or_url)`：通过 FOF99 网页基金 ID 或详情页 URL 查询产品名称、备案编号、公司管理规模等基本信息。
-- `update_nav_to_FOF99(nav_data_for_update, type, *, isolate_failed=False, skip_reasons=("非交易日",), name_col="产品名称")`：上传团队或内部净值，按平台返回的拒收原因剔除预期内的拒收，返回 `NavUploadReport`。
+- `update_nav_to_FOF99(nav_data_for_update, type, *, isolate_failed=False, skip_reasons=("非交易日",), name_col="产品名称", on_chunk=None)`：上传团队或内部净值，按平台返回的拒收原因剔除预期内的拒收，返回 `NavUploadReport`。
 
 示例：
 
@@ -95,13 +95,12 @@ print(df.head())
 而**只要有一个产品被拒，整批就不算成功**。SDK 因此不用本地交易日历，而是**以平台返回的拒收原因作为唯一事实来源**：
 
 ```python
-report = FOF99Api(appid, appkey).update_nav_to_FOF99(nav_df)
-print(len(report.uploaded), len(report.skipped))
+report = FOF99Api(appid, appkey).update_nav_to_FOF99(nav_df, on_chunk=writer)
+print(len(report.uploaded), len(report.skipped), len(report.failed))
 
 # 关键：被拒的行没进平台，调用方必须自行标记为已处理，
 # 否则每次运行都会重复读到同一批数据（例如写 sync_at = 哨兵时间）
 ```
-
 处理流程（**按请求次数从省到贵**）：
 
 1. 整批上传（每 1000 行一批）。全部成功 → 直接返回，**只 1 次请求**。
@@ -109,10 +108,36 @@ print(len(report.uploaded), len(report.skipped))
    经 `_normalize_name` 规范化（去掉 `私募证券投资基金`/`份额`/括号等通称）后，
    直接对到 `name_col`（默认 `产品名称`）列 → 得到被拒的产品代码。
    只要 `success_count + len(fail) == 产品数`（每个产品都有结论），就**不重传**，
-   平台已收下成功的那些，本地只把被拒行计入 `skipped`。
+   平台已收下成功的那些，本地只把被拒行计入 `skipped` / `failed`。
+   `fail` 侧归不出来时，再用 `data.success` 里的产品名归因（同样零请求）：
+   **只有平台确认收下的产品才会进 `uploaded`**，绝不会误标没传上去的行
+   （真实数据实测：`pending_fund_nav` 526 只产品里 524 只能反推回自身代码，
+   对不上的两只是真的同名撞车，不猜）。
 3. **逐产品重传（`isolate_failed=True`，默认关闭）**：名字归因不了时才用。
    **代价是额外 N 次请求（N = 本批产品数），会消耗接口额度**，所以默认不开。
 4. 两道都不适用 → 直接报错并原样附上平台回包（不白花额度）。
+
+### 进度不回滚：`on_chunk` 与 `NavUploadPartialFailure`
+
+调用方的回写必须挂在 `on_chunk` 上（每批一有结论就落库），**不要等函数返回**：
+
+```python
+from FOF99Api import FOF99Api, NavUploadPartialFailure
+
+try:
+    report = FOF99Api(...).update_nav_to_FOF99(df, on_chunk=writer)  # writer 里立即 UPDATE sync_at
+except NavUploadPartialFailure as exc:    # 仍是 RuntimeError 子类
+    report = exc.report
+    print(report.failed)                 # 只有这些行没被平台收下，需要处理
+except RuntimeError:                     # 整批硬失败（签名错 / app_id 无效）
+    raise
+```
+
+- 第 N 批有产品被**非预期拒收**时，SDK 仍会继续处理后面的批次，最后汇总抛
+  `NavUploadPartialFailure`；`report.uploaded` / `report.skipped` 里的行**平台已经收下了**。
+- 如果调用方偷懒把回写放在函数返回之后，一次「前 5 批成功 + 第 6 批一个产品被拒」的运行
+  会把前 5 批的标记全丢掉，下次运行整批重传一遍 —— 实测一次 6226 条全都重传，白烧额度。
+- 因此判定口径是：**「平台是否收下」由 SDK 判定，回写时机由 `on_chunk` 保证**。
 
 归一化实例（实测）：
 
@@ -129,7 +154,9 @@ print(len(report.uploaded), len(report.skipped))
 
 - `skip_reasons`：要一并跳过其它拒收时传入，如 `("非交易日", "净值数据为空")`。
 - `isolate_failed=True`：归因不了时逐产品重传（费额度）。
-- `name_col`：用于归因的产品名列；表里没有该列时自动退化为无归因。
+- `name_col`：用于归因的产品名列；表里没有该列时自动退化为无归因（此时任何拒收都只能报错，
+  所以上传前记得把产品名一起带进来）。
+- `on_chunk`：每批结论的回调，参数是单批 `NavUploadReport`；调用方应在里面立即回写。
 
 ## 网页净值抓取
 
